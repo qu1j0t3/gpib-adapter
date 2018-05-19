@@ -27,50 +27,23 @@
  * 23        blue / grey stripe
  * 24 GROUND  blue
 
- * ----- Transceiver Control -----------------------------------
- * PE     Pull-Up Enable             D10/PB2
- * TE     Talk Enable                D13/PB5                 L
- * DC     Direction Control          ?? -- tied Low -- means that this device is a controller
- * SC     System Controller          ?? -- tied High -- means that REN and IFC are transmitted by this controller
- * ----- Bus Data -----------------------------------
- * D1-D8  Data, terminal side        D2-D9     OUT if TE=H, otherwise IN. PE=H -> Totem-Pole Output; PE=L -> Open Collector Output
- * ----- Handshake -----------------------------------
- * DAV    Data Valid                 A1/PC1    OUT if TE high, otherwise IN
- * NRFD   (OC) Not Ready for Data    A2/PC2    IN if TE high, otherwise OUT
- * NDAC   (OC) Not Data Accepted     A3/PC3    IN if TE high, otherwise OUT
- * ----- Bus Control -----------------------------------
- * EOI    End or Identify            D11/PB3   Same as above if ATN high. Otherwise OUT if DC=L, IN if DC=H
- * ATN    Attention                  D12/PB4   Always OUTPUT (Transmit) if DC=L
- * SRQ    (OC) Service Request       A0/PC0    Always IN (Receive) if DC=L
- * IFC    Interface Clear            A4/PC4    Always OUTPUT (Transmit) if DC=L
- * REN    Remote Enable              A5/PC5    Always OUTPUT (Transmit) if DC=L
+ * DC     Direction Control -- tied Low -- means that this device is a controller
+ * SC     System Controller -- tied High -- means that REN and IFC are transmitted by this controller
  * 
  * Directions
- *   | PB5 . PB4 . PB3 . PB2 . PB1 . PB0 | PD7 . PD6 . PD5 . PD4 . PD3 . PD2 | PC5 . PC4 . PC3 . PC2 . PC1 . PC0 |
- *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  | REN | IFC | NDAC| NRFD| DAV | SRQ |
- *   | OUT | OUT | ??? | OUT | =TE | =TE | =TE | =TE | =TE | =TE | =TE | =TE | OUT | OUT | !TE | !TE | =TE | IN  |
- * When writing command:
- *   | PB5 . PB4 . PB3 . PB2 . PB1 . PB0 | PD7 . PD6 . PD5 . PD4 . PD3 . PD2 |
- *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  |
- *   | H   | H   | X   | H   | X   | X   | X   | X   | X   | X   | X   | X   |
- *     |     |     |     |   \_____ data ____________________________________/
- *     |     |     |      \__ totem-pole outputs
- *     |     |      \__ indicate End
- *     |      \__ command
- *      \__ talk
- * 
- * 
- * 
- * Talking:
- *  -- set D1-D8 lines, TE high, ATN, EOI, PE; set DAV high (not valid)
- *  -- wait for NRFD to go high
- *  -- set DAV low
- *  -- wait for NDAC to go high
- *  -- continue with next byte
- *  -- when done talking, set TE low.
- *  
- * Listening
- *  -- set TE low, 
+ *   | PB5 . PB4 . PB3 . PB2 . PB1 . PB0 | PD7 . PD6 . PD5 . PD4 . PD3 . PD2 | PC5 . PC4 . PC3 . PC2 . PC1 . PC0 |   Port/Pin
+ *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  | REN | IFC | NDAC| NRFD| DAV | SRQ |   Bus
+ *   +-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+ *   | OUT | OUT | *** | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | IN  | IN  | OUT | IN  |   Dir: Talk (TE High/DC Low)
+ *                           \ PE=H: Totem-Pole Output; PE=L: Open Collector Output
+ *   | OUT | OUT | *** | OUT | IN  | IN  | IN  | IN  | IN  | IN  | IN  | IN  | OUT | OUT | OUT | OUT | IN  | IN  |   Dir: Listen (TE Low/DC Low)
+ *   
+ *   TE  DC  ATN EOI***
+ *   --- --- --- -------
+ *   H   X   H   T (OUT)
+ *   L   X   H   R (IN)
+ *   X   H   L   R (IN)   Does not occur, because DC is tied Low
+ *   X   L   L   T (OUT)
  *  
  * Useful commands:
  *  *ESR?   read Standard Event Status Register
@@ -105,17 +78,21 @@ void setup() {
   pinMode(18, OUTPUT); // A4 = IFC
   pinMode(19, OUTPUT); // A5 = REN
   
+  digitalWrite(10, 1); // PE
+  digitalWrite(13, 1); // TE
+  
   Serial.begin(9600);
 }
 
 void loop() {
   for(int i = 0; i < 18; ++i) {
     Serial.println(label[i]);
-    for(int j = 0; j < 250; ++j) {
+
+    if(i != 8 && i != 11) { // skip PE and TE
       digitalWrite(i+2, 1);
-      delay(10);
+      while(Serial.read() != 13)
+        ;
       digitalWrite(i+2, 0);
-      delay(10);
     }
   }
 }
