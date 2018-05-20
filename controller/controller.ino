@@ -1,4 +1,23 @@
 /*
+    This file is part of "GPIB Adapter", an Arduino based controller for GPIB (IEEE 488).
+    Copyright (C) 2018 Toby Thain, toby@telegraphics.com.au
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+*/
+
+/*
  * Signals
 
  * Connector
@@ -53,46 +72,170 @@
  *  HORIZONTAL?    return horizontal settings
  *  CH1?      return vertical settings for Ch 1
  *  
- *  
+ *  Measured data transceiver output: 0.19V low, 3.30V high   (3.16V after both transceivers installed)
+ *  control transceiver measures 3.16V high for totem-pole outputs, 2.80V high for the open collector (SRQ, NRFD, NDAC)
  */
 
-char *label[] = {"D1","D2","D3","D4","D5","D6","D7","D8","PE","EOI","ATN","TE","SRQ","DAV","NRFD","NDAC","IFC","REN"};
+#define D1_PIN    2
+#define D2_PIN    3
+#define D3_PIN    4
+#define D4_PIN    5
+#define D5_PIN    6
+#define D6_PIN    7
+#define D7_PIN    8
+#define D8_PIN    9
+#define PE_PIN   10
+#define EOI_PIN  11
+#define ATN_PIN  12
+#define TE_PIN   13
+#define SRQ_PIN  14
+#define DAV_PIN  15
+#define NRFD_PIN 16
+#define NDAC_PIN 17
+#define IFC_PIN  18
+#define REN_PIN  19
+  
+#define TE_TALK     HIGH
+#define TE_LISTEN   LOW
+
+// GPIB levels are signal sense inverted:
+#define ATN_FALSE   HIGH
+#define ATN_TRUE    LOW
+
+void mode(bool talk, bool atn){
+  // SAFETY: Arduino outputs connected to transceiver lines configured as outputs are
+  //         likely to violate driver current limits. Set all Arduino pins to high-Z,
+  //         so that none are outputs when transceiver lines are switched to outputs by
+  //         the change in Talk Enable line.
+          
+  pinMode(D1_PIN,   INPUT); // TODO: The high level routines are very inefficient,
+  pinMode(D2_PIN,   INPUT); //       could change them to direct port operations, but our
+  pinMode(D3_PIN,   INPUT); //       serial speeds probably make this fairly unimportant.
+  pinMode(D4_PIN,   INPUT);
+  pinMode(D5_PIN,   INPUT);
+  pinMode(D6_PIN,   INPUT);
+  pinMode(D7_PIN,   INPUT);
+  pinMode(D8_PIN,   INPUT);
+  pinMode(EOI_PIN,  INPUT);
+  pinMode(DAV_PIN,  INPUT);
+  pinMode(NRFD_PIN, INPUT);
+  pinMode(NDAC_PIN, INPUT);
+  
+  byte fwd = talk ? OUTPUT : INPUT;
+  byte rev = talk ? INPUT  : OUTPUT;
+
+  digitalWrite(TE_PIN, talk); // Talk Enable
+  
+  pinMode(D1_PIN,   fwd);
+  pinMode(D2_PIN,   fwd);
+  pinMode(D3_PIN,   fwd);
+  pinMode(D4_PIN,   fwd);
+  pinMode(D5_PIN,   fwd);
+  pinMode(D6_PIN,   fwd);
+  pinMode(D7_PIN,   fwd);
+  pinMode(D8_PIN,   fwd);
+  pinMode(EOI_PIN,  atn == HIGH ? fwd : OUTPUT /*assuming DC is Low*/);
+  pinMode(DAV_PIN,  fwd);
+  pinMode(NRFD_PIN, rev);
+  pinMode(NDAC_PIN, rev);
+}
+
+/*   | PB5 . PB4 . PB3 . PB2 . PB1 . PB0 | PD7 . PD6 . PD5 . PD4 . PD3 . PD2 | PC5 . PC4 . PC3 . PC2 . PC1 . PC0 |   Port/Pin
+ *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  | REN | IFC | NDAC| NRFD| DAV | SRQ |   Bus
+ */
+ 
+#define PB_TE_MASK        0b100000
+
+#define PB_ATN_FALSE_MASK  0b10000  // combine these three bits
+#define PB_EOI_FALSE_MASK   0b1000  // to form `mask` parameter
+#define PB_PE_TOTEMPOLE      0b100  // for transmit
+
+#define ERR      0
+#define SUCCESS  1
+#define EOI      2 // if a received byte is EOI
+#define TIMEOUT  3 // not impl yet
+
+bool transmit(byte mask, byte value){
+  if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
+    return ERR;
+  }
+  
+  digitalWrite(DAV_PIN, HIGH); // data not valid
+  
+  if(digitalRead(NRFD_PIN) && digitalRead(NDAC_PIN)) {
+    return ERR;
+  } else {
+    PORTB = PB_TE_MASK | mask | (value >> 6);
+    PORTD = value << 2;
+    
+    // Wait until all acceptors are ready for data
+    while(!digitalRead(NRFD_PIN))
+      ;
+      
+    digitalWrite(DAV_PIN, LOW); // data valid
+    
+    // Wait until all acceptors have accepted the data
+    while(!digitalRead(NDAC_PIN))
+      ;
+      
+    digitalWrite(DAV_PIN, HIGH); // data not valid
+    return SUCCESS;
+  }
+}
+
+bool receive(byte *value){
+  if(PORTB & PB_TE_MASK) { // interface must be in Listen direction
+    return ERR;
+  }
+  
+  digitalWrite(NDAC_PIN, LOW);  // not accepted data
+  digitalWrite(NRFD_PIN, HIGH); // ready for data
+
+  // wait for data valid to go low (true)
+  while(digitalRead(DAV_PIN))
+    ;
+
+  digitalWrite(NRFD_PIN, LOW);  // not ready for data
+  
+  *value = (PORTB << 6) | (PORTD >> 2);
+  bool eoi_state = !digitalRead(EOI_PIN);
+  
+  digitalWrite(NDAC_PIN, HIGH); // accepted data
+  
+  return eoi_state ? EOI : SUCCESS;
+}
+
+void cmd(){
+  mode(TE_TALK, ATN_TRUE);
+  if(!transmit(PB_EOI_FALSE_MASK | PB_PE_TOTEMPOLE, 0)) {
+    Serial.println("Error: NRFD & NDAC high. Aborted transmit.");
+  }
+}
 
 void setup() {
-  pinMode(2, OUTPUT); // D1
-  pinMode(3, OUTPUT);
-  pinMode(4, OUTPUT);
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
-  pinMode(7, OUTPUT);
-  pinMode(8, OUTPUT);
-  pinMode(9, OUTPUT); // D8
-  pinMode(10, OUTPUT); // PE: High = Totem-Pole Output, Low = Open Collector Output
-  pinMode(11, OUTPUT); // EOI
-  pinMode(12, OUTPUT); // ATN
-  pinMode(13, OUTPUT); // TE: High = Output ... this is also connected to the Nano's LED
-  pinMode(14, OUTPUT); // A0 = SRQ
-  pinMode(15, OUTPUT); // A1 = DAV
-  pinMode(16, OUTPUT); // A2 = NRFD
-  pinMode(17, OUTPUT); // A3 = NDAC
-  pinMode(18, OUTPUT); // A4 = IFC
-  pinMode(19, OUTPUT); // A5 = REN
+  PORTB = PORTC = PORTD = 0; // all low
+  DDRB  = DDRC  = DDRD  = 0; // all inputs  
+
+  // Permanent direction assignments
+
+  pinMode(TE_PIN, OUTPUT); // TE: High = Output ... this is also connected to the Nano's LED
+  pinMode(PE_PIN, OUTPUT); // PE: High = Totem-Pole Output, Low = Open Collector Output
+  digitalWrite(PE_PIN, HIGH);
+
+  pinMode(ATN_PIN, OUTPUT);
+  digitalWrite(ATN_PIN, HIGH); // ATN False
+  pinMode(IFC_PIN, OUTPUT);
+  digitalWrite(IFC_PIN, HIGH); // IFC False
+  pinMode(REN_PIN, OUTPUT);
+  digitalWrite(REN_PIN, HIGH); // REN False
   
-  digitalWrite(10, 1); // PE
-  digitalWrite(13, 1); // TE
-  
-  Serial.begin(9600);
+  pinMode(SRQ_PIN, INPUT);
+
+  mode(TE_LISTEN, ATN_FALSE);
+
+  Serial.begin(115200);
 }
 
 void loop() {
-  for(int i = 0; i < 18; ++i) {
-    Serial.println(label[i]);
-
-    if(i != 8 && i != 11) { // skip PE and TE
-      digitalWrite(i+2, 1);
-      while(Serial.read() != 13)
-        ;
-      digitalWrite(i+2, 0);
-    }
-  }
+  
 }
