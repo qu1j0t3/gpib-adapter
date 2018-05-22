@@ -99,9 +99,12 @@
 #define TE_LISTEN   LOW
 
 // GPIB levels are signal sense inverted:
-#define ATN_FALSE   HIGH
-#define ATN_TRUE    LOW
+#define GPIB_FALSE   HIGH
+#define GPIB_TRUE    LOW
 
+#define MY_ADDRESS 21
+
+  
 void mode(bool talk, bool atn){
   // SAFETY: Arduino outputs connected to transceiver lines configured as outputs are
   //         likely to violate driver current limits. Set all Arduino pins to high-Z,
@@ -138,6 +141,15 @@ void mode(bool talk, bool atn){
   pinMode(DAV_PIN,  fwd);
   pinMode(NRFD_PIN, rev);
   pinMode(NDAC_PIN, rev);
+
+  if(talk) {
+    digitalWrite(DAV_PIN, HIGH); // data not valid
+  } else {
+    digitalWrite(NDAC_PIN, LOW); // not accepted data
+    digitalWrite(NRFD_PIN, LOW); // not ready for data
+  }
+
+  digitalWrite(ATN_PIN, atn);
 }
 
 /*   | PB5 . PB4 . PB3 . PB2 . PB1 . PB0 | PD7 . PD6 . PD5 . PD4 . PD3 . PD2 | PC5 . PC4 . PC3 . PC2 . PC1 . PC0 |   Port/Pin
@@ -145,19 +157,61 @@ void mode(bool talk, bool atn){
  */
  
 #define PB_TE_MASK        0b100000
+#define PC_SRQ_MASK       1
 
 #define PB_ATN_FALSE_MASK  0b10000  // combine these three bits
 #define PB_EOI_FALSE_MASK   0b1000  // to form `mask` parameter
 #define PB_PE_TOTEMPOLE      0b100  // for transmit
 
+// multiline message with ATN FALSE (device dependent data)
+#define DATA_NO_EOI  (PB_PE_TOTEMPOLE | PB_ATN_FALSE_MASK | PB_EOI_FALSE_MASK)
+#define DATA_EOI     (PB_PE_TOTEMPOLE | PB_ATN_FALSE_MASK)
+
 #define ERR      0
 #define SUCCESS  1
 #define EOI      2 // if a received byte is EOI
 #define TIMEOUT  3 // not impl yet
+#define SRQ      4
 
-bool transmit(byte mask, byte value){
+
+// X=don't care (received message); X=shall not drive (transmitted)
+// Y=don't care (transmitted);      Y=don't care (received)
+  //                                 Type Class /-----DIO-----\ VRA ATN EOI SRQ IFC REN
+  // MLA: My Listen Address        = M    AD    Y 0 1 L L L L L XXX 1   X   X   X   X
+  // MTA: My Talk Address          = M    AD    Y 1 0 T T T T T XXX 1   X   X   X   X
+  // TAG: Talk Address Group       = M    AD    Y 1 0 X X X X X XXX 1   X   X   X   X
+  // send scope talk address OTA?  = TAG & MTA
+  // send command?
+
+// Remote message definitions per IEEE 488.1-1987 section 2.13
+
+// AD - Address (talk or listen)
+#define MSG_LISTEN        0b0100000 // 0 1 L L L L L
+#define MSG_UNLISTEN      0b0111111
+#define MSG_TALK          0b1000000 // 1 0 T T T T T
+#define MSG_UNTALK        0b1011111
+// SE - Secondary
+#define MSG_SEC_ADDRESS   0b1100000 // 1 1 S S S S S
+#define MSG_PAR_POLL_ENB  0b1100000 // 1 1 0 S P P P
+#define MSG_PAR_POLL_DIS  0b1110000 // 1 1 1 D D D D - send zeroes for D
+// AC - Addressed command
+#define MSG_GO_TO_LOCAL   0b0000001
+#define MSG_SEL_DEV_CLR   0b0000100
+#define MSG_PAR_POLL_CFG  0b0000101
+#define MSG_GRP_EXEC_TRG  0b0001000
+#define MSG_TAKE_CONTROL  0b0001001
+// UC - Universal command
+#define MSG_LOCALLOCKOUT  0b0010001
+#define MSG_DEVICE_CLEAR  0b0010100
+#define MSG_PAR_POLL_UNC  0b0010101
+#define MSG_SER_POLL_ENB  0b0011000
+#define MSG_SER_POLL_DIS  0b0011001
+  
+byte transmit(byte mask, byte value){
   if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
     return ERR;
+  } else if(!(PORTC & PC_SRQ_MASK)) {
+    return SRQ;
   }
   
   digitalWrite(DAV_PIN, HIGH); // data not valid
@@ -183,9 +237,11 @@ bool transmit(byte mask, byte value){
   }
 }
 
-bool receive(byte *value){
+byte receive(byte *value){
   if(PORTB & PB_TE_MASK) { // interface must be in Listen direction
     return ERR;
+  } else if(!(PORTC & PC_SRQ_MASK)) {
+    return SRQ;
   }
   
   digitalWrite(NDAC_PIN, LOW);  // not accepted data
@@ -198,22 +254,57 @@ bool receive(byte *value){
   digitalWrite(NRFD_PIN, LOW);  // not ready for data
   
   *value = (PORTB << 6) | (PORTD >> 2);
-  bool eoi_state = !digitalRead(EOI_PIN);
+  bool eoi_level = digitalRead(EOI_PIN);
   
   digitalWrite(NDAC_PIN, HIGH); // accepted data
   
-  return eoi_state ? EOI : SUCCESS;
+  return eoi_level ? SUCCESS : EOI; // remembering level -> logic inversion
 }
 
-void cmd(){
-  mode(TE_TALK, ATN_TRUE);
-  if(!transmit(PB_EOI_FALSE_MASK | PB_PE_TOTEMPOLE, 0)) {
-    Serial.println("Error: NRFD & NDAC high. Aborted transmit.");
+byte tx_data(const char str[]) {
+  mode(TE_TALK, /*ATN*/GPIB_FALSE);
+  for(const char *p = str; *p; ++p) {
+    byte res = transmit(p[1] ? DATA_NO_EOI : DATA_EOI, *p);
+    if(res != SUCCESS) {
+      return res;
+    }
   }
+  return SUCCESS;
+}
+
+size_t rx_data(byte *buf, size_t max) {
+  mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
+  size_t n = 0;
+  for(byte *p = buf; n < max; ++n, ++p) {
+    byte res = receive(p);
+    if(res == EOI || *p == '\n') { // FIXME: What about binary data
+      return ++n;
+    } else if(res != SUCCESS) {
+      break; // TODO: Report error
+    }
+  }
+  return n;
+}
+
+#define RECEIVE_BUFFER_SIZE 0x200
+
+byte cmd(byte msg) {
+  mode(TE_TALK, /*ATN*/GPIB_TRUE);
+  return transmit(PB_PE_TOTEMPOLE | PB_EOI_FALSE_MASK, msg ^ 0xff /* invert sense for gpib level */);
+}
+
+bool check(byte res) {
+  switch(res) {
+    case EOI:
+    case SUCCESS: return 1;
+    case ERR:     Serial.println("Transmit error (NRFD & NDAC)\n"); return 0;
+    case SRQ:     Serial.println("Request service\n"); return 0;
+    case TIMEOUT: Serial.println("Timeout\n"); return 0;
+  }
+  return 0;
 }
 
 void setup() {
-  PORTB = PORTC = PORTD = 0; // all low
   DDRB  = DDRC  = DDRD  = 0; // all inputs  
 
   // Permanent direction assignments
@@ -231,9 +322,27 @@ void setup() {
   
   pinMode(SRQ_PIN, INPUT);
 
-  mode(TE_LISTEN, ATN_FALSE);
+  //mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
 
   Serial.begin(115200);
+
+  byte device = 2; //scope address
+  byte buf[RECEIVE_BUFFER_SIZE+1];  
+  
+  if( check(cmd(MSG_UNLISTEN)) &&
+      check(cmd(MSG_LISTEN | device)) &&
+      check(tx_data("*IDN?")) &&
+      check(cmd(MSG_UNLISTEN)) &&
+      check(cmd(MSG_UNTALK)) &&
+      check(cmd(MSG_TALK | device)) )
+  {
+    // At this point, ATN needs to be dropped
+    size_t n = rx_data(buf, RECEIVE_BUFFER_SIZE);
+    buf[n] = 0;
+    Serial.println((char*)buf);
+    
+    check(cmd(MSG_UNTALK));  
+  }
 }
 
 void loop() {
