@@ -101,9 +101,6 @@
 // GPIB levels are signal sense inverted:
 #define GPIB_FALSE   HIGH
 #define GPIB_TRUE    LOW
-
-#define MY_ADDRESS 21
-
   
 void mode(bool talk, bool atn){
   // SAFETY: Arduino outputs connected to transceiver lines configured as outputs are
@@ -123,11 +120,32 @@ void mode(bool talk, bool atn){
   pinMode(DAV_PIN,  INPUT);
   pinMode(NRFD_PIN, INPUT);
   pinMode(NDAC_PIN, INPUT);
+
+  // Set outputs to match the external pullups/pulldowns,
+  // to prevent glitches when pin is changed from high-Z to output.
+  if(talk) {
+    // these pins are becoming outputs
+    digitalWrite(D1_PIN,   HIGH);
+    digitalWrite(D2_PIN,   HIGH);
+    digitalWrite(D3_PIN,   HIGH);
+    digitalWrite(D4_PIN,   HIGH);
+    digitalWrite(D5_PIN,   HIGH);
+    digitalWrite(D6_PIN,   HIGH);
+    digitalWrite(D7_PIN,   HIGH);
+    digitalWrite(D8_PIN,   HIGH);
+    digitalWrite(EOI_PIN,  HIGH);
+    digitalWrite(DAV_PIN,  HIGH); // data not valid
+  } else {
+    // these pins are becoming outputs
+    if(!atn) digitalWrite(EOI_PIN,  HIGH);
+    digitalWrite(NRFD_PIN, LOW); // not ready for data
+    digitalWrite(NDAC_PIN, LOW); // not accepted data
+  }
+  
+  digitalWrite(TE_PIN, talk); // Talk Enable
   
   byte fwd = talk ? OUTPUT : INPUT;
   byte rev = talk ? INPUT  : OUTPUT;
-
-  digitalWrite(TE_PIN, talk); // Talk Enable
   
   pinMode(D1_PIN,   fwd);
   pinMode(D2_PIN,   fwd);
@@ -142,13 +160,6 @@ void mode(bool talk, bool atn){
   pinMode(NRFD_PIN, rev);
   pinMode(NDAC_PIN, rev);
 
-  if(talk) {
-    digitalWrite(DAV_PIN, HIGH); // data not valid
-  } else {
-    digitalWrite(NDAC_PIN, LOW); // not accepted data
-    digitalWrite(NRFD_PIN, LOW); // not ready for data
-  }
-
   digitalWrite(ATN_PIN, atn);
 }
 
@@ -156,9 +167,9 @@ void mode(bool talk, bool atn){
  *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  | REN | IFC | NDAC| NRFD| DAV | SRQ |   Bus
  */
  
-#define PB_TE_MASK        0b100000
 #define PC_SRQ_MASK       1
 
+#define PB_TE_MASK        0b100000
 #define PB_ATN_FALSE_MASK  0b10000  // combine these three bits
 #define PB_EOI_FALSE_MASK   0b1000  // to form `mask` parameter
 #define PB_PE_TOTEMPOLE      0b100  // for transmit
@@ -219,8 +230,11 @@ byte transmit(byte mask, byte value){
   if(digitalRead(NRFD_PIN) && digitalRead(NDAC_PIN)) {
     return ERR;
   } else {
+    value = ~ value;
     PORTB = PB_TE_MASK | mask | (value >> 6);
     PORTD = value << 2;
+
+    delayMicroseconds(2);
     
     // Wait until all acceptors are ready for data
     while(!digitalRead(NRFD_PIN))
@@ -253,7 +267,7 @@ byte receive(byte *value){
 
   digitalWrite(NRFD_PIN, LOW);  // not ready for data
   
-  *value = (PORTB << 6) | (PORTD >> 2);
+  *value = ~((PORTB << 6) | (PORTD >> 2));
   bool eoi_level = digitalRead(EOI_PIN);
   
   digitalWrite(NDAC_PIN, HIGH); // accepted data
@@ -290,18 +304,147 @@ size_t rx_data(byte *buf, size_t max) {
 
 byte cmd(byte msg) {
   mode(TE_TALK, /*ATN*/GPIB_TRUE);
-  return transmit(PB_PE_TOTEMPOLE | PB_EOI_FALSE_MASK, msg ^ 0xff /* invert sense for gpib level */);
+  return transmit(PB_PE_TOTEMPOLE | PB_EOI_FALSE_MASK, msg);
+}
+
+#define MY_SCOPE 2
+
+void serialpoll() {
+  byte stat;
+  
+  Serial.println("Serial poll");
+  cmd(MSG_UNLISTEN);
+  cmd(MSG_SER_POLL_ENB);
+  cmd(MSG_TALK | MY_SCOPE);
+  mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
+  receive(&stat);
+  cmd(MSG_SER_POLL_DIS);
+  Serial.print("Status byte: ");
+  Serial.print(stat);
+  Serial.println();
 }
 
 bool check(byte res) {
   switch(res) {
     case EOI:
-    case SUCCESS: return 1;
-    case ERR:     Serial.println("Transmit error (NRFD & NDAC)\n"); return 0;
-    case SRQ:     Serial.println("Request service\n"); return 0;
-    case TIMEOUT: Serial.println("Timeout\n"); return 0;
+    case SUCCESS:
+      return 1;
+    case ERR:
+      Serial.println("Transmit error (NRFD & NDAC)\n"); 
+      return 0;
+    case SRQ:
+      Serial.println("Request service\n");
+      serialpoll();
+      return 0;
+    case TIMEOUT: 
+      Serial.println("Timeout\n"); 
+      return 0;
   }
   return 0;
+}
+
+void output_test(byte num) {
+  Serial.print("\n\n\nRunning OUTPUT test ");
+  Serial.print(num);
+  Serial.println(". ADAPTER SHOULD BE DISCONNECTED FROM GPIB BUS.");
+  Serial.println("Test the specified Arduino pins with Oscilloscope or DVM.");
+  Serial.println("Oscilloscope should show square wave. DVM should read about half Vcc, or approx 2.5V.");
+  
+  if(num == 1) {
+    Serial.println("Transceiver control outputs: TE (D13), PE (D10)");
+  } else if(num == 2) {
+    Serial.println("Bus outputs: ATN (D12), IFC (A4), REN (A5)");
+  } else if(num == 3) {
+    Serial.println("Bidirectional pins: B1-B8 (Arduino D2-D9), EOI (D11), DAV (A1)");
+  } else if(num == 4) {       // Test handshaking pins as outputs when TE is low
+    Serial.println("Handshaking pins: NRFD (A2), NDAC (A3)");
+  }
+  
+  for(bool x = HIGH;; x ^= 1) {
+    if(num == 1) {              // Test control outputs
+      digitalWrite(TE_PIN, x);
+      digitalWrite(PE_PIN, x);
+    } else if(num == 2) {       // Test bus outputs
+      digitalWrite(ATN_PIN, x);
+      digitalWrite(IFC_PIN, x);
+      digitalWrite(REN_PIN, x);
+    } else if(num == 3) {       // Test bidir pins as outputs
+      digitalWrite(PE_PIN,  HIGH);
+      mode(/*TE*/ HIGH, /*ATN*/ HIGH);
+      digitalWrite(D1_PIN,  x);
+      digitalWrite(D2_PIN,  x);
+      digitalWrite(D3_PIN,  x);
+      digitalWrite(D4_PIN,  x);
+      digitalWrite(D5_PIN,  x);
+      digitalWrite(D6_PIN,  x);
+      digitalWrite(D7_PIN,  x);
+      digitalWrite(D8_PIN,  x);
+      digitalWrite(EOI_PIN, x);
+      digitalWrite(DAV_PIN, x);
+    } else if(num == 4) {       // Test handshaking pins as outputs when TE is low
+      digitalWrite(PE_PIN,  HIGH);
+      mode(/*TE*/ LOW, /*ATN*/ HIGH);
+      digitalWrite(NRFD_PIN, x);
+      digitalWrite(NDAC_PIN, x);
+    }
+    delay(1);
+  }
+}
+
+void input_test(byte num) {
+  Serial.print("\n\n\nRunning INPUT test ");
+  Serial.print(num);
+  Serial.println(". ADAPTER SHOULD BE DISCONNECTED FROM GPIB BUS.");
+  Serial.println("When disconnected, transceivers should read signals as HIGH (1).");
+  Serial.println("To carry out the test, short each specified BUS-side input to GND");
+  Serial.println("and observe the Arduino reads it as 0.");
+  Serial.println("(The Arduino GPIO pins (terminal side) can't be tested directly with the transceiver in circuit.)");
+  
+  if(num == 1) {
+    Serial.println("Test bus side SRQ.");
+    
+    for(byte x = 0;; ++x) {
+      Serial.print(x);
+      Serial.print("  SRQ: ");
+      Serial.println(digitalRead(SRQ_PIN));
+      delay(500);
+    }
+  } else if(num == 2) {
+    Serial.println("Test bus side NRFD & NDAC.");
+    
+    digitalWrite(PE_PIN,  HIGH);
+    mode(/*TE*/ HIGH, /*ATN*/ HIGH);
+    for(byte x = 0;; ++x) {
+      Serial.print(x);
+      Serial.print("  NRFD: ");
+      Serial.print(digitalRead(NRFD_PIN));
+      Serial.print("  NDAC: ");
+      Serial.println(digitalRead(NDAC_PIN));
+      delay(500);
+    }
+  } else if(num == 3) {
+    Serial.println("Test bus side B1 through B8, EOI, DAV.");
+    
+    digitalWrite(PE_PIN,  HIGH);
+    mode(/*TE*/ LOW, /*ATN*/ HIGH);
+    for(byte x = 0;; ++x) {
+      Serial.print(x);
+      Serial.print("  DATA: ");
+      Serial.print(digitalRead(D8_PIN));
+      Serial.print(digitalRead(D7_PIN));
+      Serial.print(digitalRead(D6_PIN));
+      Serial.print(digitalRead(D5_PIN));
+      Serial.print(digitalRead(D4_PIN));
+      Serial.print(digitalRead(D3_PIN));
+      Serial.print(digitalRead(D2_PIN));
+      Serial.print(digitalRead(D1_PIN));
+      Serial.print("  EOI: ");
+      Serial.print(digitalRead(EOI_PIN));
+      Serial.print("  DAV: ");
+      Serial.println(digitalRead(DAV_PIN));
+      delay(500);
+    }
+  }
 }
 
 void setup() {
@@ -326,8 +469,22 @@ void setup() {
 
   Serial.begin(115200);
 
-  byte device = 2; //scope address
-  byte buf[RECEIVE_BUFFER_SIZE+1];  
+  //output_test(1);
+  //input_test(3);
+
+  Serial.println("Controller start");
+
+  byte device = MY_SCOPE;
+  byte buf[RECEIVE_BUFFER_SIZE+1];
+  
+  delay(10);
+  if(!(PORTC & PC_SRQ_MASK)) {
+    serialpoll();
+  }
+  delay(10);
+  if(!(PORTC & PC_SRQ_MASK)) {
+    serialpoll();
+  }
   
   if( check(cmd(MSG_UNLISTEN)) &&
       check(cmd(MSG_LISTEN | device)) &&
@@ -336,13 +493,13 @@ void setup() {
       check(cmd(MSG_UNTALK)) &&
       check(cmd(MSG_TALK | device)) )
   {
-    // At this point, ATN needs to be dropped
     size_t n = rx_data(buf, RECEIVE_BUFFER_SIZE);
     buf[n] = 0;
     Serial.println((char*)buf);
     
     check(cmd(MSG_UNTALK));  
   }
+
 }
 
 void loop() {

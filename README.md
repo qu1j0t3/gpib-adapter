@@ -26,3 +26,65 @@ It's assumed you already have tools including solder, iron, drill, wire stripper
 | ---- | --- | -------------- |
 | IC socket 22 pin | 1 | [ED11093-ND](https://www.digikey.ca/product-detail/en/mill-max-manufacturing-corp/110-47-422-41-001000/ED11093-ND/7363969) |
 
+### Pictures of assembled adapter
+
+(Please don't pay attention to my shoddy soldering.)
+
+* [Top](https://www.flickr.com/photos/qu1j0t3/40411827020/in/dateposted/)
+* [Bottom](https://www.flickr.com/photos/qu1j0t3/27248196397/in/photostream/)
+
+Pull-up resistors should be added to the bidirectional lines,
+on the terminal side of the transceivers.
+I'm going to use 22kΩ. This ensures the transceiver will read
+a defined logic level while these pins are high-Z
+but before transceiver direction is switched.
+
+##### Bidirectional lines (12)
+
+* D1-8 - pull up at GPIO/terminal
+* EOI  - pull up at GPIO/terminal
+* DAV  - pull up at GPIO/terminal
+* NRFD - pull down at GPIO/terminal
+* NDAC - pull down at GPIO/terminal
+
+#### Initial build did not work
+
+##### Test plan:
+
+* Disconnect from bus
+* Output test #1
+    * Send square wave to TE (D13), PE (D10) output pins, verify on Arduino side - _PASS_
+* Output test #2
+  * Send square wave to each permanent output pin, verify on Arduino side and bus side - _PASS_
+    * ATN (D12)
+    * IFC (A4)
+    * REN (A5)
+* Input test #1
+  By hand set LOW (ground through a 1K resistor for current limiting) 
+  and set HIGH (VCC through a 1K resistor for current limiting), verify at Arduino
+  (e.g. read input and print to serial) - _PASS_
+  * SRQ
+* Output test #3
+  * Set TE (Talk Enable) HIGH, PE HIGH, ATN HIGH
+  * Send square wave to each switchable output pin, verify on Arduino side and bus side
+    * B1-8 (D2-D9) - _PASS_
+    * EOI (D11) - _PASS_
+    * DAV (A1) - _PASS_
+* Input test #2
+  * Set TE (Talk Enable) HIGH, PE HIGH, ATN HIGH
+    * Verify NRFD as input - input test #2 - _PASS_
+    * Verify NDAC as input - input test #2 - _PASS_
+* Input test #3 
+  * Set TE (Talk Enable) LOW
+  * Each switchable input pin: By hand set LOW and set HIGH, verify at Arduino
+    * D1-8 - _PASS_
+    * EOI - _PASS_
+    * DAV - _PASS_
+* Output test #4
+  * Set TE (Talk Enable) LOW
+  * Verify NRFD (A2) as output - _PASS_
+  * Verify NDAC (A3) as output - _PASS_
+
+All tests passed 100%. Hmmm...
+
+
