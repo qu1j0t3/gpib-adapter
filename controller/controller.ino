@@ -221,7 +221,7 @@ void mode(bool talk, bool atn){
 byte transmit(byte mask, byte value){
   if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
     return ERR;
-  } else if(!(PORTC & PC_SRQ_MASK)) {
+  } else if(!(PINC & PC_SRQ_MASK)) {
     return SRQ;
   }
   
@@ -254,7 +254,7 @@ byte transmit(byte mask, byte value){
 byte receive(byte *value){
   if(PORTB & PB_TE_MASK) { // interface must be in Listen direction
     return ERR;
-  } else if(!(PORTC & PC_SRQ_MASK)) {
+  } else if(!(PINC & PC_SRQ_MASK)) {
     return SRQ;
   }
   
@@ -267,7 +267,7 @@ byte receive(byte *value){
 
   digitalWrite(NRFD_PIN, LOW);  // not ready for data
   
-  *value = ~((PORTB << 6) | (PORTD >> 2));
+  *value = ~((PINB << 6) | (PIND >> 2));
   bool eoi_level = digitalRead(EOI_PIN);
   
   digitalWrite(NDAC_PIN, HIGH); // accepted data
@@ -311,6 +311,7 @@ byte cmd(byte msg) {
 
 void serialpoll() {
   byte stat;
+  char bits[9];
   
   Serial.println("Serial poll");
   cmd(MSG_UNLISTEN);
@@ -320,7 +321,8 @@ void serialpoll() {
   receive(&stat);
   cmd(MSG_SER_POLL_DIS);
   Serial.print("Status byte: ");
-  Serial.print(stat);
+  eight_bits(stat, bits);
+  Serial.print(bits);
   Serial.println();
 }
 
@@ -334,7 +336,7 @@ bool check(byte res) {
       return 0;
     case SRQ:
       Serial.println("Request service\n");
-      serialpoll();
+      //serialpoll();
       return 0;
     case TIMEOUT: 
       Serial.println("Timeout\n"); 
@@ -447,6 +449,13 @@ void input_test(byte num) {
   }
 }
 
+void eight_bits(byte v, char *s) {
+  for(byte m = 0x80; m; m >>= 1) {
+    *s++ = v & m ? '1' : '0';
+  }
+  *s = 0;
+}
+
 void setup() {
   DDRB  = DDRC  = DDRD  = 0; // all inputs  
 
@@ -465,25 +474,30 @@ void setup() {
   
   pinMode(SRQ_PIN, INPUT);
 
-  //mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
-
   Serial.begin(115200);
 
   //output_test(1);
-  //input_test(3);
+  //input_test(1);
+  
+  //mode(/*TE*/LOW, /*ATN*/HIGH);
+  /*for(byte n=10; n--;) {
+    char x[9];
+    eight_bits(PINC, x);
+    Serial.print(n);
+    Serial.print("  ");
+    Serial.println(x);
+    delay(500);
+  }*/
 
   Serial.println("Controller start");
 
   byte device = MY_SCOPE;
   byte buf[RECEIVE_BUFFER_SIZE+1];
   
-  delay(10);
-  if(!(PORTC & PC_SRQ_MASK)) {
+check_srq:
+  while(!(PINC & PC_SRQ_MASK)) {
     serialpoll();
-  }
-  delay(10);
-  if(!(PORTC & PC_SRQ_MASK)) {
-    serialpoll();
+    delay(1000);
   }
   
   if( check(cmd(MSG_UNLISTEN)) &&
@@ -498,6 +512,8 @@ void setup() {
     Serial.println((char*)buf);
     
     check(cmd(MSG_UNTALK));  
+  } else {
+    goto check_srq;
   }
 
 }
