@@ -181,7 +181,7 @@ void mode(bool talk, bool atn){
 #define ERR      0
 #define SUCCESS  1
 #define EOI      2 // if a received byte is EOI
-#define TIMEOUT  3 // not impl yet
+#define TIMEOUT  3
 #define SRQ      4
 
 
@@ -217,7 +217,11 @@ void mode(bool talk, bool atn){
 #define MSG_PAR_POLL_UNC  0b0010101
 #define MSG_SER_POLL_ENB  0b0011000
 #define MSG_SER_POLL_DIS  0b0011001
-  
+
+#define TRANSMIT_TIMEOUT_MS 500
+
+volatile unsigned millisCountdown = 0;
+
 byte transmit(byte mask, byte value){
   if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
     return ERR;
@@ -230,22 +234,42 @@ byte transmit(byte mask, byte value){
   if(digitalRead(NRFD_PIN) && digitalRead(NDAC_PIN)) {
     return ERR;
   } else {
+    char b[9];
+    eight_bits(value, b);
+    
     value = ~ value;
     PORTB = PB_TE_MASK | mask | (value >> 6);
     PORTD = value << 2;
 
+    Serial.print("transmit: ");
+    Serial.print(b);
+    if(!(mask & PB_ATN_FALSE_MASK)) Serial.print("  ATN=TRUE");
+    if(!(mask & PB_EOI_FALSE_MASK)) Serial.print("  EOI=TRUE");
+    Serial.println(mask & PB_PE_TOTEMPOLE ? "  PE=HIGH (totem-pole)" : "  PE=LOW (open collector)");
     delayMicroseconds(2);
     
     // Wait until all acceptors are ready for data
-    while(!digitalRead(NRFD_PIN))
+    countdown(TRANSMIT_TIMEOUT_MS);
+    while(!digitalRead(NRFD_PIN) && millisCountdown)
       ;
+
+    if(millisCountdown == 0) {
+      Serial.println("NRFD was not raised within 500ms. Aborting transmit");
+      return TIMEOUT;
+    }
       
     digitalWrite(DAV_PIN, LOW); // data valid
     
     // Wait until all acceptors have accepted the data
-    while(!digitalRead(NDAC_PIN))
+    countdown(TRANSMIT_TIMEOUT_MS);
+    while(!digitalRead(NDAC_PIN) && millisCountdown)
       ;
-      
+
+    if(millisCountdown == 0) {
+      Serial.println("NDAC was not raised within 500ms. Aborting transmit");
+      return TIMEOUT;
+    }
+    
     digitalWrite(DAV_PIN, HIGH); // data not valid
     return SUCCESS;
   }
@@ -304,6 +328,7 @@ size_t rx_data(byte *buf, size_t max) {
 
 byte cmd(byte msg) {
   mode(TE_TALK, /*ATN*/GPIB_TRUE);
+  Serial.print("cmd:  ");
   return transmit(PB_PE_TOTEMPOLE | PB_EOI_FALSE_MASK, msg);
 }
 
@@ -456,6 +481,17 @@ void eight_bits(byte v, char *s) {
   *s = 0;
 }
 
+ISR(TIMER1_COMPA_vect) {
+  TCNT1 = 0; // reset timer
+  if(millisCountdown) --millisCountdown;
+}
+
+void countdown(unsigned ms) {
+  TIMSK1 = 0;
+  millisCountdown = ms;
+  TIMSK1 = (1 << OCIE1A);
+}
+
 void setup() {
   DDRB  = DDRC  = DDRD  = 0; // all inputs  
 
@@ -466,15 +502,27 @@ void setup() {
   digitalWrite(PE_PIN, HIGH);
 
   pinMode(ATN_PIN, OUTPUT);
-  digitalWrite(ATN_PIN, HIGH); // ATN False
   pinMode(IFC_PIN, OUTPUT);
-  digitalWrite(IFC_PIN, HIGH); // IFC False
   pinMode(REN_PIN, OUTPUT);
-  digitalWrite(REN_PIN, HIGH); // REN False
+  digitalWrite(ATN_PIN, GPIB_FALSE);
+  digitalWrite(IFC_PIN, GPIB_TRUE);
+  digitalWrite(REN_PIN, GPIB_TRUE);
+  delay(10);
+  digitalWrite(IFC_PIN, GPIB_FALSE);
+  
   
   pinMode(SRQ_PIN, INPUT);
 
   Serial.begin(115200);
+
+  // set up 1ms interrupt
+  TCCR1A = TCCR1C = 0;
+  TCCR1B = (1 << CS10); //B101; // clkIO/1 prescaler
+  OCR1A = 16000; // approx 1ms
+  TIMSK1 = 0; //(1 << OCIE1A); // set output compare A match interrupt enable
+
+  interrupts();
+
 
   //output_test(1);
   //input_test(1);
@@ -493,13 +541,15 @@ void setup() {
 
   byte device = MY_SCOPE;
   byte buf[RECEIVE_BUFFER_SIZE+1];
+
+  
   
 check_srq:
   while(!(PINC & PC_SRQ_MASK)) {
     serialpoll();
     delay(1000);
   }
-  
+    
   if( check(cmd(MSG_UNLISTEN)) &&
       check(cmd(MSG_LISTEN | device)) &&
       check(tx_data("*IDN?")) &&
