@@ -254,18 +254,23 @@ byte tx_data(const char str[]) {
   return SUCCESS;
 }
 
-size_t rx_data(byte *buf, size_t max) {
-  mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
+byte rx_data(byte *buf, size_t max, size_t *count) {
+  // This might be called in a block loop, so don't bother
+  // changing direction unless necessary.
+  if(PORTB & PB_TE_MASK) mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
+  
   size_t n = 0;
   for(byte *p = buf; n < max; ++n, ++p) {
     byte res = receive(p);
     if(res == EOI || *p == '\n') { // FIXME: What about binary data
-      return ++n;
+      *count = ++n;
+      return SUCCESS;
     } else if(res != SUCCESS) {
-      break; // TODO: Report error
+      return res;
     }
   }
-  return n;
+  *count = n;
+  return BUFFER_FULL;
 }
 
 #define RECEIVE_BUFFER_SIZE 0x200
@@ -339,20 +344,30 @@ bool send_query(byte device, const char *command, byte *buf, size_t sz) {
   Serial.print("?> ");
   Serial.println(command);
   
-  bool res = check_srq() &&
-             check(cmd(MSG_UNLISTEN))        && check_srq() &&
-             check(cmd(MSG_LISTEN | device)) && check_srq() &&
-             check(tx_data(command))         && check_srq() &&
-             check(cmd(MSG_UNLISTEN))        && check_srq() &&
-             check(cmd(MSG_UNTALK))          && check_srq() &&
-             check(cmd(MSG_TALK | device))   && check_srq();
-  if(res) {
-    size_t n = rx_data(buf, sz);
-    buf[n] = 0;
+  bool ok = check_srq() &&
+            check(cmd(MSG_UNLISTEN))        && check_srq() &&
+            check(cmd(MSG_LISTEN | device)) && check_srq() &&
+            check(tx_data(command))         && check_srq() &&
+            check(cmd(MSG_UNLISTEN))        && check_srq() &&
+            check(cmd(MSG_UNTALK))          && check_srq() &&
+            check(cmd(MSG_TALK | device))   && check_srq();
+  if(ok) {
+    size_t n;
+    byte res;
+    do {
+      res = rx_data(buf, sz, &n);
+      if(res == SUCCESS || res == BUFFER_FULL) {
+        buf[n] = 0;
+        for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
+        Serial.print((char*)buf);
+      } else {
+        return 0;
+      }
+    } while(res == BUFFER_FULL);
     
-    return check(cmd(MSG_UNTALK));  
+    //return check(cmd(MSG_UNTALK));  
   }
-  return res;
+  return 0;
 }
 
 bool send_command(byte device, const char *command) {
@@ -430,6 +445,16 @@ query.
   && send_command(MY_SCOPE, "data:start 1")
   && send_command(MY_SCOPE, "data:stop 10")
   && send_query(MY_SCOPE, "wfmpre:ch1?", buf, RECEIVE_BUFFER_SIZE)) {
+    Serial.println((char*)buf);
+    // 7 chars per sample, 500 samples will be 3.5K
+    if(send_query(MY_SCOPE, "curve?", buf, RECEIVE_BUFFER_SIZE)) {
+      Serial.println((char*)buf);
+    }
+  }
+  
+  if(send_command(MY_SCOPE, "hardcopy:format epsmono") 
+  && send_command(MY_SCOPE, "hardcopy:port gpib")
+  && send_query(MY_SCOPE, "hardcopy start", buf, RECEIVE_BUFFER_SIZE)) {
     Serial.println((char*)buf);
   }
 }

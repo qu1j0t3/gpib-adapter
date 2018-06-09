@@ -59,11 +59,12 @@
 #define DATA_NO_EOI  (PB_PE_TOTEMPOLE | PB_ATN_FALSE_MASK | PB_EOI_FALSE_MASK)
 #define DATA_EOI     (PB_PE_TOTEMPOLE | PB_ATN_FALSE_MASK)
 
-#define ERR      0
-#define SUCCESS  1
-#define EOI      2 // if a received byte is EOI
-#define TIMEOUT  3
-#define SRQ      4
+#define ERR         0
+#define SUCCESS     1
+#define EOI         2 // if a received byte is EOI
+#define TIMEOUT     3
+#define SRQ         4
+#define BUFFER_FULL 5
 
 // X=don't care (received message); X=shall not drive (transmitted)
 // Y=don't care (transmitted);      Y=don't care (received)
