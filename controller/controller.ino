@@ -223,9 +223,15 @@ byte receive(byte *value){
   digitalWrite(NRFD_PIN, HIGH); // ready for data
 
   // wait for data valid to go low (true)
-  while(digitalRead(DAV_PIN))
+  countdown(5000);
+  while(digitalRead(DAV_PIN) && millisCountdown)
     ;
 
+  if(millisCountdown == 0) {
+    Serial.println("Data not valid within 5 sec. Aborting receive");
+    return TIMEOUT;
+  }
+  
   digitalWrite(NRFD_PIN, LOW);  // not ready for data
   
   *value = ~((PINB << 6) | (PIND >> 2));
@@ -326,6 +332,23 @@ void countdown(unsigned ms) {
   TIMSK1 = (1 << OCIE1A);
 }
 
+bool send_command(byte device, const char *command, byte *buf, size_t sz) {
+  bool res = check_srq() &&
+             check(cmd(MSG_UNLISTEN))        && check_srq() &&
+             check(cmd(MSG_LISTEN | device)) && check_srq() &&
+             check(tx_data(command))         && check_srq() &&
+             check(cmd(MSG_UNLISTEN))        && check_srq() &&
+             check(cmd(MSG_UNTALK))          && check_srq() &&
+             check(cmd(MSG_TALK | device))   && check_srq();
+  if(res) {
+    size_t n = rx_data(buf, sz);
+    buf[n] = 0;
+    
+    return check(cmd(MSG_UNTALK));  
+  }
+  return res;
+}
+
 void setup() {
   DDRB  = DDRC  = DDRD  = 0; // all inputs  
 
@@ -340,8 +363,8 @@ void setup() {
   pinMode(REN_PIN, OUTPUT);
   digitalWrite(ATN_PIN, GPIB_FALSE);
   digitalWrite(REN_PIN, GPIB_FALSE);
-  digitalWrite(IFC_PIN, GPIB_TRUE);
-  delay(10);
+  //digitalWrite(IFC_PIN, GPIB_TRUE);
+  //delay(10);
   digitalWrite(IFC_PIN, GPIB_FALSE);
   
   
@@ -363,22 +386,14 @@ void setup() {
 
   Serial.println("\n\n\nController start");
 
-  byte device = MY_SCOPE;
   byte buf[RECEIVE_BUFFER_SIZE+1];
-    
-  if( check_srq() &&
-      check(cmd(MSG_UNLISTEN)) && check_srq() &&
-      check(cmd(MSG_LISTEN | device)) && check_srq() &&
-      check(tx_data("*IDN?")) && check_srq() &&
-      check(cmd(MSG_UNLISTEN)) && check_srq() &&
-      check(cmd(MSG_UNTALK)) && check_srq() &&
-      check(cmd(MSG_TALK | device)) &&  check_srq())
-  {
-    size_t n = rx_data(buf, RECEIVE_BUFFER_SIZE);
-    buf[n] = 0;
+
+  if(send_command(MY_SCOPE, "*IDN?", buf, RECEIVE_BUFFER_SIZE)) {
     Serial.println((char*)buf);
-    
-    check(cmd(MSG_UNTALK));  
+  }
+  
+  if(send_command(MY_SCOPE, "acquire?", buf, RECEIVE_BUFFER_SIZE)) {
+    Serial.println((char*)buf);
   }
 }
 
