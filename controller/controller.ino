@@ -112,6 +112,8 @@ void mode(bool talk, bool atn){
   
   if(talk) {
     // these pins are becoming outputs
+    // Because the pins are now configured as inputs, setting them HIGH actually enables
+    // the Arduino's internal pull-ups. (This is redundant as I have external pull-ups.)
     digitalWrite(D1_PIN,   HIGH);
     digitalWrite(D2_PIN,   HIGH);
     digitalWrite(D3_PIN,   HIGH);
@@ -125,6 +127,7 @@ void mode(bool talk, bool atn){
   } else {
     // these pins are becoming outputs
     if(!atn) digitalWrite(EOI_PIN,  HIGH);
+    // These two pins have external pulldown resistors:
     digitalWrite(NRFD_PIN, LOW); // not ready for data
     digitalWrite(NDAC_PIN, LOW); // not accepted data
   }
@@ -152,7 +155,7 @@ void mode(bool talk, bool atn){
 
 #define TRANSMIT_TIMEOUT_MS 500
 
-volatile unsigned millisCountdown = 0;
+volatile unsigned millisCountdown, millisCountUp;
 
 byte transmit(byte mask, byte value){
   if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
@@ -254,7 +257,7 @@ byte tx_data(const char str[]) {
   return SUCCESS;
 }
 
-byte rx_data(byte *buf, size_t max, size_t *count) {
+byte rx_data(byte *buf, size_t max, size_t *count, bool is_binary) {
   // This might be called in a block loop, so don't bother
   // changing direction unless necessary.
   if(PORTB & PB_TE_MASK) mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
@@ -262,7 +265,7 @@ byte rx_data(byte *buf, size_t max, size_t *count) {
   size_t n = 0;
   for(byte *p = buf; n < max; ++n, ++p) {
     byte res = receive(p);
-    if(res == EOI || *p == '\n') { // FIXME: What about binary data
+    if(res == EOI || (!is_binary && *p == '\n')) {
       *count = ++n;
       return SUCCESS;
     } else if(res != SUCCESS) {
@@ -332,6 +335,7 @@ void eight_bits(byte v, char *s) {
 ISR(TIMER1_COMPA_vect) {
   TCNT1 = 0; // reset timer
   if(millisCountdown) --millisCountdown;
+  ++millisCountUp;
 }
 
 void countdown(unsigned ms) {
@@ -352,11 +356,15 @@ bool send_query(byte device, const char *command, byte *buf, size_t sz) {
             check(cmd(MSG_UNTALK))          && check_srq() &&
             check(cmd(MSG_TALK | device))   && check_srq();
   if(ok) {
-    size_t n;
+    size_t n = 0;
     byte res;
+    size_t rx_total = 0;
+    millisCountUp = 0;
     do {
-      res = rx_data(buf, sz, &n);
+      res = rx_data(buf, sz, &n, 1/*binary mode*/);
       if(res == SUCCESS || res == BUFFER_FULL) {
+        rx_total += n;
+
         buf[n] = 0;
         for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
         Serial.print((char*)buf);
@@ -364,6 +372,11 @@ bool send_query(byte device, const char *command, byte *buf, size_t sz) {
         return 0;
       }
     } while(res == BUFFER_FULL);
+    
+    Serial.print("  Received bytes: ");
+    Serial.println(rx_total);
+    Serial.print("  Time (ms): ");
+    Serial.println(millisCountUp);
     
     //return check(cmd(MSG_UNTALK));  
   }
@@ -451,11 +464,11 @@ query.
       Serial.println((char*)buf);
     }
   }
-  
+
   if(send_command(MY_SCOPE, "hardcopy:format epsmono") 
   && send_command(MY_SCOPE, "hardcopy:port gpib")
   && send_query(MY_SCOPE, "hardcopy start", buf, RECEIVE_BUFFER_SIZE)) {
-    Serial.println((char*)buf);
+      Serial.println("\n\n%%% Hardcopy done");
   }
 }
 
