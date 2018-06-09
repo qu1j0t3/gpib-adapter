@@ -377,6 +377,8 @@ bool send_query(byte device, const char *command, byte *buf, size_t sz) {
     Serial.println(rx_total);
     Serial.print("  Time (ms): ");
     Serial.println(millisCountUp);
+
+    return res == SUCCESS;
     
     //return check(cmd(MSG_UNTALK));  
   }
@@ -434,13 +436,8 @@ void setup() {
 
   byte buf[RECEIVE_BUFFER_SIZE+1];
 
-  if(send_query(MY_SCOPE, "*IDN?", buf, RECEIVE_BUFFER_SIZE)) {
-    Serial.println((char*)buf);
-  }
-  
-  if(send_query(MY_SCOPE, "acquire?", buf, RECEIVE_BUFFER_SIZE)) {
-    Serial.println((char*)buf);
-  }
+  if(send_query(MY_SCOPE, "*IDN?", buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
+  if(send_query(MY_SCOPE, "acquire?", buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
 
   /*
    * Select the waveform source(s) using the DATa:SOUrce command. If you want to transfer multiple waveforms, select more than one source.
@@ -456,17 +453,17 @@ query.
   && send_command(MY_SCOPE, "data:encdg ascii")
   && send_command(MY_SCOPE, "data:width 2")
   && send_command(MY_SCOPE, "data:start 1")
-  && send_command(MY_SCOPE, "data:stop 10")
+  && send_command(MY_SCOPE, "data:stop 500")
   && send_query(MY_SCOPE, "wfmpre:ch1?", buf, RECEIVE_BUFFER_SIZE)) {
-    Serial.println((char*)buf);
     // 7 chars per sample, 500 samples will be 3.5K
     if(send_query(MY_SCOPE, "curve?", buf, RECEIVE_BUFFER_SIZE)) {
-      Serial.println((char*)buf);
+      Serial.println("\n\n%%% Curve done");
     }
   }
 
   if(send_command(MY_SCOPE, "hardcopy:format epsmono") 
   && send_command(MY_SCOPE, "hardcopy:port gpib")
+  && send_command(MY_SCOPE, "hardcopy:layout portrait")
   && send_query(MY_SCOPE, "hardcopy start", buf, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Hardcopy done");
   }
