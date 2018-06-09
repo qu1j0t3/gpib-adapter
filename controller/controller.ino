@@ -166,6 +166,7 @@ byte transmit(byte mask, byte value){
   if(digitalRead(NRFD_PIN) && digitalRead(NDAC_PIN)) {
     return ERR;
   } else {
+#ifdef DEBUG
     char b[9];
     eight_bits(value, b);
 
@@ -179,7 +180,7 @@ byte transmit(byte mask, byte value){
     if(!(mask & PB_ATN_FALSE_MASK)) Serial.print("  ATN");
     if(!(mask & PB_EOI_FALSE_MASK)) Serial.print("  EOI");
     Serial.println(mask & PB_PE_TOTEMPOLE ? "  PE(TP)" : "  ~PE(OC)");
-    
+#endif
     value = ~ value;
     PORTB = PB_TE_MASK | mask | (value >> 6);
     PORTD = value << 2;
@@ -271,7 +272,9 @@ size_t rx_data(byte *buf, size_t max) {
 
 byte cmd(byte msg) {
   mode(TE_TALK, /*ATN*/GPIB_TRUE);
+#ifdef DEBUG
   Serial.print("cmd:  ");
+#endif
   return transmit(PB_PE_TOTEMPOLE | PB_EOI_FALSE_MASK, msg);
 }
 
@@ -332,7 +335,10 @@ void countdown(unsigned ms) {
   TIMSK1 = (1 << OCIE1A);
 }
 
-bool send_command(byte device, const char *command, byte *buf, size_t sz) {
+bool send_query(byte device, const char *command, byte *buf, size_t sz) {
+  Serial.print("?> ");
+  Serial.println(command);
+  
   bool res = check_srq() &&
              check(cmd(MSG_UNLISTEN))        && check_srq() &&
              check(cmd(MSG_LISTEN | device)) && check_srq() &&
@@ -347,6 +353,18 @@ bool send_command(byte device, const char *command, byte *buf, size_t sz) {
     return check(cmd(MSG_UNTALK));  
   }
   return res;
+}
+
+bool send_command(byte device, const char *command) {
+  Serial.print("!> ");
+  Serial.println(command);
+  
+  return check_srq() &&
+         check(cmd(MSG_UNLISTEN))        && check_srq() &&
+         check(cmd(MSG_LISTEN | device)) && check_srq() &&
+         check(tx_data(command))         && check_srq() &&
+         check(cmd(MSG_UNLISTEN))        && check_srq() &&
+         check(cmd(MSG_UNTALK))          && check_srq();
 }
 
 void setup() {
@@ -388,11 +406,30 @@ void setup() {
 
   byte buf[RECEIVE_BUFFER_SIZE+1];
 
-  if(send_command(MY_SCOPE, "*IDN?", buf, RECEIVE_BUFFER_SIZE)) {
+  if(send_query(MY_SCOPE, "*IDN?", buf, RECEIVE_BUFFER_SIZE)) {
     Serial.println((char*)buf);
   }
   
-  if(send_command(MY_SCOPE, "acquire?", buf, RECEIVE_BUFFER_SIZE)) {
+  if(send_query(MY_SCOPE, "acquire?", buf, RECEIVE_BUFFER_SIZE)) {
+    Serial.println((char*)buf);
+  }
+
+  /*
+   * Select the waveform source(s) using the DATa:SOUrce command. If you want to transfer multiple waveforms, select more than one source.
+2. Specify the waveform data format using DATa:ENCdg.
+3. Specify the number of bytes per data point using DATa:WIDth.
+4. Specify the portion of the waveform that you want to transfer using DATa:STARt and DATa:STOP.
+5. Transfer waveform preamble information using WFMPRe? query.
+6. Transfer waveform data from the digitizing oscilloscope using the CURVe?
+query.
+   */
+  
+  if(send_command(MY_SCOPE, "data:source ch1") 
+  && send_command(MY_SCOPE, "data:encdg ascii")
+  && send_command(MY_SCOPE, "data:width 2")
+  && send_command(MY_SCOPE, "data:start 1")
+  && send_command(MY_SCOPE, "data:stop 10")
+  && send_query(MY_SCOPE, "wfmpre:ch1?", buf, RECEIVE_BUFFER_SIZE)) {
     Serial.println((char*)buf);
   }
 }
