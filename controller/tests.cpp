@@ -19,6 +19,7 @@
 #include <Arduino.h>
 
 #include "controller.h"
+#include "pinmap.h"
 
 void output_test(byte num) {
   Serial.print("\n\n\nRunning OUTPUT test ");

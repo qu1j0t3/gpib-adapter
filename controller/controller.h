@@ -17,25 +17,6 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
-#define D1_PIN    2
-#define D2_PIN    3
-#define D3_PIN    4
-#define D4_PIN    5
-#define D5_PIN    6
-#define D6_PIN    7
-#define D7_PIN    8
-#define D8_PIN    9
-#define PE_PIN   10
-#define EOI_PIN  11
-#define ATN_PIN  12
-#define TE_PIN   13
-#define SRQ_PIN  14
-#define DAV_PIN  15
-#define NRFD_PIN 16
-#define NDAC_PIN 17
-#define IFC_PIN  18
-#define REN_PIN  19
-  
 #define TE_TALK     HIGH
 #define TE_LISTEN   LOW
 
@@ -48,16 +29,23 @@
  *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  | REN | IFC | NDAC| NRFD| DAV | SRQ |   Bus
  */
  
-#define PC_SRQ_MASK       1
 
-#define PB_TE_MASK        0b100000
-#define PB_ATN_FALSE_MASK  0b10000  // combine these three bits
-#define PB_EOI_FALSE_MASK   0b1000  // to form `mask` parameter
-#define PB_PE_TOTEMPOLE      0b100  // for transmit
+#define PB_TE_MASK   0b100000
+#define PB_ATN_MASK   0b10000  // combine these three bits
+#define PB_EOI_MASK    0b1000  // to form `mask` parameter
+#define PB_PE_TOTEMPOLE 0b100  // for transmit
+
+#define PC_REN_MASK  0b100000
+#define PC_IFC_MASK   0b10000
+#define PC_NDAC_MASK   0b1000
+#define PC_NRFD_MASK    0b100
+#define PC_DAV_MASK      0b10
+#define PC_SRQ_MASK         1
 
 // multiline message with ATN FALSE (device dependent data)
-#define DATA_NO_EOI  (PB_PE_TOTEMPOLE | PB_ATN_FALSE_MASK | PB_EOI_FALSE_MASK)
-#define DATA_EOI     (PB_PE_TOTEMPOLE | PB_ATN_FALSE_MASK)
+#define DATA_NO_EOI  (PB_PE_TOTEMPOLE | PB_ATN_MASK | PB_EOI_MASK)
+#define CMD_NO_EOI   (PB_PE_TOTEMPOLE | PB_EOI_MASK)
+#define DATA_EOI     (PB_PE_TOTEMPOLE | PB_ATN_MASK)
 
 #define ERR         0
 #define SUCCESS     1
@@ -99,5 +87,5 @@
 #define MSG_SER_POLL_ENB  0b0011000
 #define MSG_SER_POLL_DIS  0b0011001
 
-void mode(bool talk, bool atn);
+void mode(bool talk, byte atn_eoi_pe);
 

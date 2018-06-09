@@ -78,6 +78,11 @@
 
 #include "controller.h"
 
+#define PB_OUTPUTS    0b110100 // PORTB Pins that are always outputs
+#define PB_BIDI_FWD   0b001011 // PORTB Bidirectional pins that follow TALK ENABLE (transmit when TE is high)
+#define PC_OUTPUTS    0b110000 // PORTC Pins that are always outputs
+#define PC_BIDI_FWD   0b000010 // PORTC Bidirectional pins that follow TALK ENABLE
+#define PD_BIDI_FWD 0b11111100 // PORTD Bidirectional pins that follow TALK ENABLE
 
 // Address of instrument. In my case, Tektronix TDS460A.
 // Check GPIB address on the Shift-STATUS screen, I/O tab.
@@ -85,7 +90,7 @@
 #define MY_SCOPE 2
 
 
-void mode(bool talk, bool atn){
+void mode(bool talk, byte atn_eoi_pe){
   // SAFETY: Arduino outputs connected to transceiver lines configured as outputs are
   //         likely to violate driver current limits. Set all Arduino pins to high-Z,
   //         so that none are outputs when transceiver lines are switched to outputs by
@@ -93,64 +98,41 @@ void mode(bool talk, bool atn){
   //           As high-Z pins, these will be pulled up or down according to
   //         the wired resistors on the terminal side (GPIO pin). 
   //         All are pulled up to Vcc except NRFD and NDAC which are pulled down to GND.
+
+  // Set all bidirectional pins to INPUT
           
-  pinMode(D1_PIN,   INPUT); // TODO: The high level routines are very inefficient,
-  pinMode(D2_PIN,   INPUT); //       could change them to direct port operations, but our
-  pinMode(D3_PIN,   INPUT); //       serial speeds probably make this fairly unimportant.
-  pinMode(D4_PIN,   INPUT);
-  pinMode(D5_PIN,   INPUT);
-  pinMode(D6_PIN,   INPUT);
-  pinMode(D7_PIN,   INPUT);
-  pinMode(D8_PIN,   INPUT);
-  pinMode(EOI_PIN,  INPUT);
-  pinMode(DAV_PIN,  INPUT);
-  pinMode(NRFD_PIN, INPUT);
-  pinMode(NDAC_PIN, INPUT);
+  DDRB = PB_OUTPUTS;
+  DDRC = PC_OUTPUTS;
+  DDRD = 0; // all port D pins are bidirectional
 
-  // Set outputs to match the external pullups/pulldowns,
-  // to prevent glitches when pin is changed from high-Z to output.
-  
   if(talk) {
-    // these pins are becoming outputs
-    // Because the pins are now configured as inputs, setting them HIGH actually enables
-    // the Arduino's internal pull-ups. (This is redundant as I have external pull-ups.)
-    digitalWrite(D1_PIN,   HIGH);
-    digitalWrite(D2_PIN,   HIGH);
-    digitalWrite(D3_PIN,   HIGH);
-    digitalWrite(D4_PIN,   HIGH);
-    digitalWrite(D5_PIN,   HIGH);
-    digitalWrite(D6_PIN,   HIGH);
-    digitalWrite(D7_PIN,   HIGH);
-    digitalWrite(D8_PIN,   HIGH);
-    digitalWrite(EOI_PIN,  HIGH);
-    digitalWrite(DAV_PIN,  HIGH); // data not valid
+    // DIO1-8, EOI, DAV are becoming outputs.
+    // Since pins are configured as inputs (above), setting them HIGH enables
+    // Arduino's internal pull-ups. (Redundant as I have external pull-ups.)
+    PORTC |= PC_BIDI_FWD;
+    PORTD  = PD_BIDI_FWD;
+    PORTB  = PB_TE_MASK | atn_eoi_pe; //--------- Set transceiver to TALK ---------
+    
+    // Now set actual direction to match transceiver/TE
+    DDRC = PC_OUTPUTS | PC_BIDI_FWD;
+    DDRD = PD_BIDI_FWD;
+    DDRB = PB_OUTPUTS | PB_BIDI_FWD;
   } else {
-    // these pins are becoming outputs
-    if(!atn) digitalWrite(EOI_PIN,  HIGH);
-    // These two pins have external pulldown resistors:
-    digitalWrite(NRFD_PIN, LOW); // not ready for data
-    digitalWrite(NDAC_PIN, LOW); // not accepted data
-  }
-  
-  digitalWrite(TE_PIN, talk); // Talk Enable
-  
-  byte fwd = talk ? OUTPUT : INPUT;
-  byte rev = talk ? INPUT  : OUTPUT;
-  
-  pinMode(D1_PIN,   fwd);
-  pinMode(D2_PIN,   fwd);
-  pinMode(D3_PIN,   fwd);
-  pinMode(D4_PIN,   fwd);
-  pinMode(D5_PIN,   fwd);
-  pinMode(D6_PIN,   fwd);
-  pinMode(D7_PIN,   fwd);
-  pinMode(D8_PIN,   fwd);
-  pinMode(EOI_PIN,  atn == HIGH ? fwd : OUTPUT /*assuming DC is Low*/);
-  pinMode(DAV_PIN,  fwd);
-  pinMode(NRFD_PIN, rev);
-  pinMode(NDAC_PIN, rev);
+    // NRFD, NDAC, EOI (depending on ATN) are becoming outputs
+    PORTC &= ~PC_NRFD_MASK; // set NRFD LOW (true on GPIB)
+    PORTC &= ~PC_NDAC_MASK; // set NDAC LOW (true on GPIB)
+    PORTB  = atn_eoi_pe; //--------- Set transceiver to LISTEN ---------
+    
+    // Now set actual direction to match transceiver/TE
+    DDRC |= PC_NRFD_MASK;
+    DDRC |= PC_NDAC_MASK;
 
-  digitalWrite(ATN_PIN, atn);
+    // EOI follows direction of Talk Enable, UNLESS ATN is LOW when it is the opposite of Talk Enable.
+    if(!(atn_eoi_pe & PB_ATN_MASK)) {
+      PORTB |= PB_EOI_MASK;
+      DDRB  |= PB_EOI_MASK; // EOI is output
+    }
+  }
 }
 
 #define TRANSMIT_TIMEOUT_MS 500
@@ -160,13 +142,11 @@ volatile unsigned millisCountdown, millisCountUp;
 byte transmit(byte mask, byte value){
   if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
     return ERR;
-  } /*else if(!(PINC & PC_SRQ_MASK)) {
-    return SRQ;
-  }*/
+  }
+
+  PORTC |= PC_DAV_MASK; // data not valid
   
-  digitalWrite(DAV_PIN, HIGH); // data not valid
-  
-  if(digitalRead(NRFD_PIN) && digitalRead(NDAC_PIN)) {
+  if((PINC & (PC_NRFD_MASK | PC_NDAC_MASK)) == (PC_NRFD_MASK | PC_NDAC_MASK)) {
     return ERR;
   } else {
 #ifdef DEBUG
@@ -191,7 +171,7 @@ byte transmit(byte mask, byte value){
     
     // Wait until all acceptors are ready for data
     countdown(TRANSMIT_TIMEOUT_MS);
-    while(!digitalRead(NRFD_PIN) && millisCountdown)
+    while(!(PINC & PC_NRFD_MASK) && millisCountdown)
       ;
 
     if(millisCountdown == 0) {
@@ -199,11 +179,11 @@ byte transmit(byte mask, byte value){
       return TIMEOUT;
     }
       
-    digitalWrite(DAV_PIN, LOW); // data valid
+    PORTC &= ~PC_DAV_MASK; // data valid
     
     // Wait until all acceptors have accepted the data
     countdown(TRANSMIT_TIMEOUT_MS);
-    while(!digitalRead(NDAC_PIN) && millisCountdown)
+    while(!(PINC & PC_NDAC_MASK) && millisCountdown)
       ;
 
     if(millisCountdown == 0) {
@@ -211,7 +191,7 @@ byte transmit(byte mask, byte value){
       return TIMEOUT;
     }
     
-    digitalWrite(DAV_PIN, HIGH); // data not valid
+    PORTC |= PC_DAV_MASK; // data not valid
     return SUCCESS;
   }
 }
@@ -219,35 +199,33 @@ byte transmit(byte mask, byte value){
 byte receive(byte *value){
   if(PORTB & PB_TE_MASK) { // interface must be in Listen direction
     return ERR;
-  } /*else if(!(PINC & PC_SRQ_MASK)) {
-    return SRQ;
-  }*/
-  
-  digitalWrite(NDAC_PIN, LOW);  // not accepted data
-  digitalWrite(NRFD_PIN, HIGH); // ready for data
+  }
+
+  PORTC &= ~PC_NDAC_MASK; // not accepted data
+  PORTC |= PC_NRFD_MASK;  // ready for data
 
   // wait for data valid to go low (true)
   countdown(5000);
-  while(digitalRead(DAV_PIN) && millisCountdown)
+  while((PINC & PC_DAV_MASK) && millisCountdown)
     ;
 
   if(millisCountdown == 0) {
     Serial.println("Data not valid within 5 sec. Aborting receive");
     return TIMEOUT;
   }
-  
-  digitalWrite(NRFD_PIN, LOW);  // not ready for data
+
+  PORTC &= ~PC_NRFD_MASK; // not ready for data
   
   *value = ~((PINB << 6) | (PIND >> 2));
-  bool eoi_level = digitalRead(EOI_PIN);
+  byte res = PINB & PB_EOI_MASK ? SUCCESS : EOI; // remembering level -> logic inversion
+
+  PORTC |= PC_NDAC_MASK; // accepted data
   
-  digitalWrite(NDAC_PIN, HIGH); // accepted data
-  
-  return eoi_level ? SUCCESS : EOI; // remembering level -> logic inversion
+  return res;
 }
 
 byte tx_data(const char str[]) {
-  mode(TE_TALK, /*ATN*/GPIB_FALSE);
+  mode(TE_TALK, DATA_NO_EOI);
   for(const char *p = str; *p; ++p) {
     byte res = transmit(p[1] ? DATA_NO_EOI : DATA_EOI, *p);
     if(res != SUCCESS) {
@@ -260,7 +238,7 @@ byte tx_data(const char str[]) {
 byte rx_data(byte *buf, size_t max, size_t *count, bool is_binary) {
   // This might be called in a block loop, so don't bother
   // changing direction unless necessary.
-  if(PORTB & PB_TE_MASK) mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
+  if(PORTB & PB_TE_MASK) mode(TE_LISTEN, DATA_NO_EOI);
   
   size_t n = 0;
   for(byte *p = buf; n < max; ++n, ++p) {
@@ -279,11 +257,11 @@ byte rx_data(byte *buf, size_t max, size_t *count, bool is_binary) {
 #define RECEIVE_BUFFER_SIZE 0x200
 
 byte cmd(byte msg) {
-  mode(TE_TALK, /*ATN*/GPIB_TRUE);
+  mode(TE_TALK, CMD_NO_EOI);
 #ifdef DEBUG
   Serial.print("cmd:  ");
 #endif
-  return transmit(PB_PE_TOTEMPOLE | PB_EOI_FALSE_MASK, msg);
+  return transmit(CMD_NO_EOI, msg);
 }
 
 void serialpoll() {
@@ -294,7 +272,7 @@ void serialpoll() {
   cmd(MSG_UNLISTEN);
   cmd(MSG_SER_POLL_ENB);
   cmd(MSG_TALK | MY_SCOPE);
-  mode(TE_LISTEN, /*ATN*/GPIB_FALSE);
+  mode(TE_LISTEN, DATA_NO_EOI);
   receive(&stat);
   cmd(MSG_SER_POLL_DIS);
   Serial.print("Status byte: ");
@@ -379,8 +357,6 @@ bool send_query(byte device, const char *command, byte *buf, size_t sz) {
     Serial.println(millisCountUp);
 
     return res == SUCCESS;
-    
-    //return check(cmd(MSG_UNTALK));  
   }
   return 0;
 }
@@ -398,25 +374,18 @@ bool send_command(byte device, const char *command) {
 }
 
 void setup() {
-  DDRB  = DDRC  = DDRD  = 0; // all inputs  
+  DDRB = DDRC = DDRD = 0; // all inputs
 
-  // Permanent direction assignments
+  mode(TE_LISTEN, DATA_NO_EOI);
 
-  pinMode(TE_PIN, OUTPUT); // TE: High = Output ... this is also connected to the Nano's LED
-  pinMode(PE_PIN, OUTPUT); // PE: High = Totem-Pole Output, Low = Open Collector Output
-  digitalWrite(PE_PIN, HIGH);
+  PORTC |= PC_REN_MASK; // set REN false on GPIB
 
-  pinMode(ATN_PIN, OUTPUT);
-  pinMode(IFC_PIN, OUTPUT);
-  pinMode(REN_PIN, OUTPUT);
-  digitalWrite(ATN_PIN, GPIB_FALSE);
-  digitalWrite(REN_PIN, GPIB_FALSE);
-  //digitalWrite(IFC_PIN, GPIB_TRUE);
+  // Uncomment these two lines to execute interface clear at controller initialisation
+  //PORTC &= ~PC_IFC_MASK; // set IFC true on GPIB
   //delay(10);
-  digitalWrite(IFC_PIN, GPIB_FALSE);
   
-  
-  pinMode(SRQ_PIN, INPUT);
+  PORTC |= PC_IFC_MASK; // set IFC false on GPIB
+
 
   Serial.begin(115200);
 
