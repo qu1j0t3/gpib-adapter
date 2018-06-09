@@ -28,28 +28,36 @@ It's assumed you already have tools including solder, iron, drill, wire stripper
 
 ### Pictures of assembled adapter
 
-(Please don't pay attention to my shoddy soldering.)
+![Assembled adapter](https://farm1.staticflickr.com/906/40411827020_23a976546c_z_d.jpg)
 
-* [Top](https://www.flickr.com/photos/qu1j0t3/40411827020/in/dateposted/)
-* [Bottom](https://www.flickr.com/photos/qu1j0t3/27248196397/in/photostream/)
+* [More images at Flickr](https://www.flickr.com/photos/qu1j0t3/40411827020/in/dateposted/)
 
-Pull-up resistors should be added to the bidirectional lines,
-on the terminal side of the transceivers.
-I'm going to use 22kΩ. This ensures the transceiver will read
+#### Note on transceiver controlled bidirectional lines
+
+Pull-up and pull-down resistors ensure the transceiver will read
 a defined logic level while these pins are high-Z
 but before transceiver direction is switched.
 
-##### Bidirectional lines (12)
+* D1-8 - pull up at GPIO/terminal - Arduino internal pullups can be used
+* EOI  - pull up at GPIO/terminal - Arduino internal pullups can be used
+* DAV  - pull up at GPIO/terminal - Arduino internal pullups can be used
+* NRFD - pull down at GPIO/terminal with 22kΩ resistor to GND
+* NDAC - pull down at GPIO/terminal with 22kΩ resistor to GND
 
-* D1-8 - pull up at GPIO/terminal
-* EOI  - pull up at GPIO/terminal
-* DAV  - pull up at GPIO/terminal
-* NRFD - pull down at GPIO/terminal
-* NDAC - pull down at GPIO/terminal
+### Success
+
+Adapter fully works. For example I have been able to capture curve data and hardcopy imagery.
+
+![Hardcopy example](sine.png)
+
+![Curve example](https://i.imgur.com/MQ9LX2t.png)
 
 #### Initial build did not work
 
 ##### Test plan:
+
+There are test routines which can be enabled in the source.
+Use them in combination with the steps below.
 
 * Disconnect from bus
 * Output test #1
