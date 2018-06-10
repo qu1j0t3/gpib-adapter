@@ -322,7 +322,11 @@ void countdown(unsigned ms) {
   TIMSK1 = (1 << OCIE1A);
 }
 
-bool send_query(byte device, const char *command, byte *buf, size_t sz) {
+#define TEXT   0
+#define BINARY 1
+
+bool send_query(byte device, const char *command, bool binary_mode, byte *buf, size_t sz) {
+  static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   Serial.print("?> ");
   Serial.println(command);
   
@@ -338,18 +342,44 @@ bool send_query(byte device, const char *command, byte *buf, size_t sz) {
     byte res;
     size_t rx_total = 0;
     millisCountUp = 0;
+    if(binary_mode) {
+      sz -= (sz % 3) + 3; // make buffer a multiple of 3 for correct Base64 encoding
+      Serial.println("%%% Base64 data:");
+    }
     do {
-      res = rx_data(buf, sz, &n, 1/*binary mode*/);
+      res = rx_data(buf, sz, &n, binary_mode);
       if(res == SUCCESS || res == BUFFER_FULL) {
         rx_total += n;
 
-        buf[n] = 0;
-        for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
-        Serial.print((char*)buf);
+        if(binary_mode) {
+          size_t i;
+          byte groups;
+          buf[n] = buf[n+1] = buf[n+2] = 0; // zero out trailing octet group after defined data
+          for(i = 0, groups = 0; i < n; i += 3) {
+            byte n1 = buf[i] >> 2;
+            byte n2 = (buf[i] << 4) | (buf[i+1] >> 4);
+            byte n3 = (buf[i+1] << 2) | (buf[i+2] >> 6);
+            byte n4 = buf[i+2];
+            Serial.print(                 base64[n1]           ); // Always defined
+            Serial.print(                 base64[n2 & 0b111111]); // Always defined
+            Serial.print(i >= n-1 ? '=' : base64[n3 & 0b111111]); // Only defined if we have data for p[1] and p[2]
+            Serial.print(i >= n-2 ? '=' : base64[n4 & 0b111111]); // Only defined if we have data for p[2]
+            ++groups;
+            if(groups == 18) {
+              Serial.print('\n');
+              groups = 0;
+            }
+          }
+        } else {
+          buf[n] = 0;
+          for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
+          Serial.print((char*)buf);
+        }
       } else {
         return 0;
       }
     } while(res == BUFFER_FULL);
+    if(binary_mode) Serial.println("\n%%% Base64 end");
     
     Serial.print("  Received bytes: ");
     Serial.println(rx_total);
@@ -405,8 +435,8 @@ void setup() {
 
   byte buf[RECEIVE_BUFFER_SIZE+1];
 
-  if(send_query(MY_SCOPE, "*IDN?", buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
-  if(send_query(MY_SCOPE, "acquire?", buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
+  if(send_query(MY_SCOPE, "*IDN?",    TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
+  if(send_query(MY_SCOPE, "acquire?", TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
 
   /*
    * Select the waveform source(s) using the DATa:SOUrce command. If you want to transfer multiple waveforms, select more than one source.
@@ -417,23 +447,32 @@ void setup() {
 6. Transfer waveform data from the digitizing oscilloscope using the CURVe?
 query.
    */
-  
+
   if(send_command(MY_SCOPE, "data:source ch1") 
   && send_command(MY_SCOPE, "data:encdg ascii")
   && send_command(MY_SCOPE, "data:width 2")
   && send_command(MY_SCOPE, "data:start 1")
-  && send_command(MY_SCOPE, "data:stop 500")
-  && send_query(MY_SCOPE, "wfmpre:ch1?", buf, RECEIVE_BUFFER_SIZE)) {
+  && send_command(MY_SCOPE, "data:stop 10")
+  && send_query(MY_SCOPE, "wfmpre:ch1?", TEXT, buf, RECEIVE_BUFFER_SIZE)) {
     // 7 chars per sample, 500 samples will be 3.5K
-    if(send_query(MY_SCOPE, "curve?", buf, RECEIVE_BUFFER_SIZE)) {
+    if(send_query(MY_SCOPE, "curve?", TEXT, buf, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Curve done");
     }
   }
 
+  // Example text format hardcopy
   if(send_command(MY_SCOPE, "hardcopy:format epsmono") 
   && send_command(MY_SCOPE, "hardcopy:port gpib")
   && send_command(MY_SCOPE, "hardcopy:layout portrait")
-  && send_query(MY_SCOPE, "hardcopy start", buf, RECEIVE_BUFFER_SIZE)) {
+  && send_query(MY_SCOPE, "hardcopy start", TEXT, buf, RECEIVE_BUFFER_SIZE)) {
+      Serial.println("\n\n%%% Hardcopy done");
+  }
+
+  // Example binary format hardcopy. Convert base64 output with a suitable utility.
+  if(send_command(MY_SCOPE, "hardcopy:format tiff") 
+  && send_command(MY_SCOPE, "hardcopy:port gpib")
+  && send_command(MY_SCOPE, "hardcopy:layout portrait")
+  && send_query(MY_SCOPE, "hardcopy start", BINARY, buf, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Hardcopy done");
   }
 }
