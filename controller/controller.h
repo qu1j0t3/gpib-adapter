@@ -87,5 +87,7 @@
 #define MSG_SER_POLL_ENB  0b0011000
 #define MSG_SER_POLL_DIS  0b0011001
 
+#define NO_DEVICE 31
+
 void mode(bool talk, byte atn_eoi_pe);
 

@@ -255,7 +255,8 @@ byte rx_data(byte *buf, size_t max, size_t *count, bool is_binary) {
 }
 
 #define RECEIVE_BUFFER_SIZE 0x200
-
+static byte buf[RECEIVE_BUFFER_SIZE+1];
+  
 byte cmd(byte msg) {
   mode(TE_TALK, CMD_NO_EOI);
 #ifdef DEBUG
@@ -264,28 +265,37 @@ byte cmd(byte msg) {
   return transmit(CMD_NO_EOI, msg);
 }
 
+bool read_sesr = 0;
+bool message_available = 0;
+
 void serialpoll() {
   byte stat;
-  char bits[9];
   
-  Serial.println("Serial poll");
   cmd(MSG_UNLISTEN);
   cmd(MSG_SER_POLL_ENB);
   cmd(MSG_TALK | MY_SCOPE);
   mode(TE_LISTEN, DATA_NO_EOI);
   receive(&stat);
   cmd(MSG_SER_POLL_DIS);
-  Serial.print("Status byte: ");
-  eight_bits(stat, bits);
-  Serial.print(bits);
+  Serial.print("\nSRQ Status: ");
+  if(stat & 0b1000000) Serial.print(" RequestService");
+  if(stat & 0b0100000) {
+    Serial.print(" EventStatusBit");
+    read_sesr |= 1;
+  }
+  if(stat & 0b0010000) {
+    Serial.print(" MessageAvailable");
+    message_available |= 1;
+  }
   Serial.println();
 }
 
 bool check_srq() {
   if(!(PINC & PC_SRQ_MASK)) {
     serialpoll();
+    return 1;
   }
-  return (PINC & PC_SRQ_MASK) == PC_SRQ_MASK;
+  return 0;
 }
 
 bool check(byte res) {
@@ -325,18 +335,17 @@ void countdown(unsigned ms) {
 #define TEXT   0
 #define BINARY 1
 
-bool send_query(byte device, const char *command, bool binary_mode, byte *buf, size_t sz) {
+bool send_query(byte device, char *command, bool binary_mode, byte *buf, size_t sz) {
   static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   Serial.print("?> ");
   Serial.println(command);
   
-  bool ok = check_srq() &&
-            check(cmd(MSG_UNLISTEN))        && check_srq() &&
-            check(cmd(MSG_LISTEN | device)) && check_srq() &&
-            check(tx_data(command))         && check_srq() &&
-            check(cmd(MSG_UNLISTEN))        && check_srq() &&
-            check(cmd(MSG_UNTALK))          && check_srq() &&
-            check(cmd(MSG_TALK | device))   && check_srq();
+  bool ok = check(cmd(MSG_UNLISTEN)) &&
+            check(cmd(MSG_LISTEN | device)) &&
+            check(tx_data(command)) &&
+            check(cmd(MSG_UNLISTEN)) &&
+            check(cmd(MSG_UNTALK)) &&
+            check(cmd(MSG_TALK | device));
   if(ok) {
     size_t n = 0, rx_total = 0, groups = 0;
     byte res;
@@ -352,6 +361,7 @@ bool send_query(byte device, const char *command, bool binary_mode, byte *buf, s
       res = rx_data(buf, sz, &n, binary_mode);
       if(res == SUCCESS || res == BUFFER_FULL) {
         rx_total += n;
+        buf[n] = 0; // terminate buffer for caller convenience with short responses
 
         if(binary_mode) {
           size_t i;
@@ -361,31 +371,33 @@ bool send_query(byte device, const char *command, bool binary_mode, byte *buf, s
             byte n2 = (buf[i] << 4) | (buf[i+1] >> 4);
             byte n3 = (buf[i+1] << 2) | (buf[i+2] >> 6);
             byte n4 = buf[i+2];
-            Serial.print(                 base64[n1]           ); // Always defined
-            Serial.print(                 base64[n2 & 0b111111]); // Always defined
-            Serial.print(i >= n-1 ? '=' : base64[n3 & 0b111111]); // Only defined if we have data for p[1] and p[2]
-            Serial.print(i >= n-2 ? '=' : base64[n4 & 0b111111]); // Only defined if we have data for p[2]
+            Serial.write(                 base64[n1]           ); // Always defined
+            Serial.write(                 base64[n2 & 0b111111]); // Always defined
+            Serial.write(i >= n-1 ? '=' : base64[n3 & 0b111111]); // Only defined if we have data for p[1] and p[2]
+            Serial.write(i >= n-2 ? '=' : base64[n4 & 0b111111]); // Only defined if we have data for p[2]
             ++groups;
             if(groups == 18) {
-              Serial.print('\n');
+              Serial.write('\n');
               groups = 0;
             }
           }
         } else {
-          buf[n] = 0;
           for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
-          Serial.print((char*)buf);
+          Serial.write(buf, n);
         }
       } else {
         return 0;
       }
     } while(res == BUFFER_FULL);
     if(binary_mode) Serial.println("\n%%% Base64 end");
-    
-    Serial.print("  Received bytes: ");
-    Serial.println(rx_total);
-    Serial.print("  Time (ms): ");
-    Serial.println(millisCountUp);
+
+    if(rx_total > sz) { // Only show stats on "long" responses
+      Serial.print("  Received bytes: ");
+      Serial.println(rx_total);
+      Serial.print("  Time (ms): ");
+      Serial.println(millisCountUp);
+    }
+    Serial.flush();
 
     return res == SUCCESS;
   }
@@ -396,12 +408,11 @@ bool send_command(byte device, const char *command) {
   Serial.print("!> ");
   Serial.println(command);
   
-  return check_srq() &&
-         check(cmd(MSG_UNLISTEN))        && check_srq() &&
-         check(cmd(MSG_LISTEN | device)) && check_srq() &&
-         check(tx_data(command))         && check_srq() &&
-         check(cmd(MSG_UNLISTEN))        && check_srq() &&
-         check(cmd(MSG_UNTALK))          && check_srq();
+  return check(cmd(MSG_UNLISTEN)) &&
+         check(cmd(MSG_LISTEN | device)) &&
+         check(tx_data(command)) &&
+         check(cmd(MSG_UNLISTEN)) &&
+         check(cmd(MSG_UNTALK));
 }
 
 void setup() {
@@ -433,21 +444,9 @@ void setup() {
   //input_test(1);
 
   Serial.println("\n\n\nController start");
-
-  byte buf[RECEIVE_BUFFER_SIZE+1];
-
+/*
   if(send_query(MY_SCOPE, "*IDN?",    TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
   if(send_query(MY_SCOPE, "acquire?", TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
-
-  /*
-   * Select the waveform source(s) using the DATa:SOUrce command. If you want to transfer multiple waveforms, select more than one source.
-2. Specify the waveform data format using DATa:ENCdg.
-3. Specify the number of bytes per data point using DATa:WIDth.
-4. Specify the portion of the waveform that you want to transfer using DATa:STARt and DATa:STOP.
-5. Transfer waveform preamble information using WFMPRe? query.
-6. Transfer waveform data from the digitizing oscilloscope using the CURVe?
-query.
-   */
 
   if(send_command(MY_SCOPE, "data:source ch1") 
   && send_command(MY_SCOPE, "data:encdg ascii")
@@ -475,8 +474,86 @@ query.
   && send_command(MY_SCOPE, "hardcopy:layout portrait")
   && send_query(MY_SCOPE, "hardcopy start", BINARY, buf, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Hardcopy done");
-  }
+  }*/
 }
 
 void loop() {
+  byte device = NO_DEVICE;
+  bool binary_mode = TEXT, prompt = 1;
+  
+  //Serial.setTimeout(60*60*1000L);
+  
+  Serial.println("At controller prompt, enter device number (0..30) to make that device current.");
+  Serial.println("At device prompt, enter commands. '$' returns to controller prompt.");
+  Serial.println("'$t' sets text mode for responses. '$b' sets binary (base64) mode for responses.");
+  for(;;) {
+    size_t n;
+    do {
+      if(prompt) {
+        prompt = 0;
+        if(device == NO_DEVICE) {
+          Serial.print("controller> ");
+        } else {
+          Serial.print(device);
+          Serial.print("> ");
+        }
+      }
+      
+      prompt = check_srq();
+      if(read_sesr) {
+        read_sesr = 0;
+        send_query(device, (char*)"*ESR?", TEXT, buf, RECEIVE_BUFFER_SIZE);
+        byte sesr = atoi((char*)buf);
+        if(sesr) {
+          Serial.print("\nEvent Status Register: ");
+          if(sesr & 0b10000000) Serial.print(" PowerOn");
+          if(sesr & 0b01000000) Serial.print(" UserRequest");
+          if(sesr & 0b00100000) Serial.print(" CommandError");
+          if(sesr & 0b00010000) Serial.print(" ExecutionError");
+          if(sesr & 0b00001000) Serial.print(" DeviceError");
+          if(sesr & 0b00000100) Serial.print(" QueryError");
+          if(sesr & 0b00000010) Serial.print(" RequestControl");
+          if(sesr & 0b00000001) Serial.print(" OperationComplete");
+          Serial.write('\n');
+          send_query(device, (char*)"EVMSG?", TEXT, buf, RECEIVE_BUFFER_SIZE);
+        }
+      }
+      
+      n = Serial.readBytesUntil('\n', buf, RECEIVE_BUFFER_SIZE);
+    } while(n == 0);
+    Serial.write('\n');
+
+    prompt = 1;
+    
+    buf[n] = 0;
+    if(n) {
+      if(isdigit(buf[0])) {
+        unsigned d = atoi((char*)buf);
+        if(d < 31) {
+          device = d;
+          Serial.print("Current device changed to ");
+          Serial.print(d);
+          Serial.println(". Enter $ to return to controller prompt.");
+        } else {
+          Serial.println("Device ID must be between 0 and 30.");
+        }
+      } else if(buf[0] == '$') {
+        if(toupper(buf[1]) == 'T') {
+          binary_mode = TEXT;
+          Serial.println("Response mode: Text");
+        } else if(toupper(buf[1]) == 'B') {
+          binary_mode = BINARY;
+          Serial.println("Response mode: Binary (base64)");
+        } else {
+          device = NO_DEVICE;
+        }
+      } else if(device != NO_DEVICE) {
+        if(buf[n-1] == '?') {
+          send_query(device, (char*)buf, binary_mode, buf, RECEIVE_BUFFER_SIZE);
+        } else {
+          send_command(device, (char*)buf);
+        }
+      }
+    }
+  }
 }
