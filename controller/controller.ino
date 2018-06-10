@@ -304,7 +304,7 @@ bool check(byte res) {
     case SUCCESS:
       return 1;
     case ERR:
-      Serial.println("Transmit error (NRFD & NDAC)\n"); 
+      Serial.println("Transmit error (NRFD & NDAC) - Is adapter plugged into bus and devices are powered on?\n"); 
       return 0;
     case TIMEOUT: 
       Serial.println("Timeout\n"); 
@@ -371,8 +371,8 @@ bool send_query(byte device, char *command, bool binary_mode, byte *buf, size_t 
             byte n2 = (buf[i] << 4) | (buf[i+1] >> 4);
             byte n3 = (buf[i+1] << 2) | (buf[i+2] >> 6);
             byte n4 = buf[i+2];
-            Serial.write(                 base64[n1]           ); // Always defined
-            Serial.write(                 base64[n2 & 0b111111]); // Always defined
+            Serial.write(base64[n1]);                             // Always defined
+            Serial.write(base64[n2 & 0b111111]);                  // Always defined
             Serial.write(i >= n-1 ? '=' : base64[n3 & 0b111111]); // Only defined if we have data for p[1] and p[2]
             Serial.write(i >= n-2 ? '=' : base64[n4 & 0b111111]); // Only defined if we have data for p[2]
             ++groups;
