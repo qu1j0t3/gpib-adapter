@@ -338,14 +338,16 @@ bool send_query(byte device, const char *command, bool binary_mode, byte *buf, s
             check(cmd(MSG_UNTALK))          && check_srq() &&
             check(cmd(MSG_TALK | device))   && check_srq();
   if(ok) {
-    size_t n = 0;
+    size_t n = 0, rx_total = 0, groups = 0;
     byte res;
-    size_t rx_total = 0;
+
     millisCountUp = 0;
+    
     if(binary_mode) {
       sz -= (sz % 3) + 3; // make buffer a multiple of 3 for correct Base64 encoding
       Serial.println("%%% Base64 data:");
     }
+
     do {
       res = rx_data(buf, sz, &n, binary_mode);
       if(res == SUCCESS || res == BUFFER_FULL) {
@@ -353,9 +355,8 @@ bool send_query(byte device, const char *command, bool binary_mode, byte *buf, s
 
         if(binary_mode) {
           size_t i;
-          byte groups;
           buf[n] = buf[n+1] = buf[n+2] = 0; // zero out trailing octet group after defined data
-          for(i = 0, groups = 0; i < n; i += 3) {
+          for(i = 0; i < n; i += 3) {
             byte n1 = buf[i] >> 2;
             byte n2 = (buf[i] << 4) | (buf[i+1] >> 4);
             byte n3 = (buf[i+1] << 2) | (buf[i+2] >> 6);
