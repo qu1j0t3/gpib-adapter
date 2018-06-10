@@ -205,12 +205,12 @@ byte receive(byte *value){
   PORTC |= PC_NRFD_MASK;  // ready for data
 
   // wait for data valid to go low (true)
-  countdown(5000);
+  countdown(10000);
   while((PINC & PC_DAV_MASK) && millisCountdown)
     ;
 
   if(millisCountdown == 0) {
-    Serial.println("Data not valid within 5 sec. Aborting receive");
+    Serial.println("Data not valid within 10 sec. Aborting receive");
     return TIMEOUT;
   }
 
