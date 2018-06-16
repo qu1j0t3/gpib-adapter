@@ -76,7 +76,11 @@
  *  control transceiver measures 3.16V high for totem-pole outputs, 2.80V high for the open collector (SRQ, NRFD, NDAC)
  */
 
+#include <ctype.h>
+
 #include "controller.h"
+
+const char *CTLR_VERSION = "2018-06-16 Controller by Toby Thain <toby@telegraphics.com.au>";
 
 #define PB_OUTPUTS    0b110100 // PORTB Pins that are always outputs
 #define PB_BIDI_FWD   0b001011 // PORTB Bidirectional pins that follow TALK ENABLE (transmit when TE is high)
@@ -84,11 +88,29 @@
 #define PC_BIDI_FWD   0b000010 // PORTC Bidirectional pins that follow TALK ENABLE
 #define PD_BIDI_FWD 0b11111100 // PORTD Bidirectional pins that follow TALK ENABLE
 
-// Address of instrument. In my case, Tektronix TDS460A.
-// Check GPIB address on the Shift-STATUS screen, I/O tab.
+#define ESC 033
 
-#define MY_SCOPE 2
+#define TRANSMIT_TIMEOUT_10MS 50
 
+// Prologix protocol state
+
+byte addr = NO_DEVICE;
+byte sec_addr = 0;
+byte read_after_write = 1;
+byte read_until_eoi = 1;
+byte read_until_char;
+byte command_eoi = 1;
+byte eos = 3;
+byte eot_enable = 0;
+byte eot_char;
+byte listen_only = 0;
+unsigned read_timeout_10ms = 150;
+byte status_byte = 0;
+
+// nonstandard
+byte verbose = 1;
+byte binary_mode = 0;
+byte cr_to_lf = 0;
 
 void mode(bool talk, byte atn_eoi_pe){
   // SAFETY: Arduino outputs connected to transceiver lines configured as outputs are
@@ -135,19 +157,17 @@ void mode(bool talk, byte atn_eoi_pe){
   }
 }
 
-#define TRANSMIT_TIMEOUT_MS 500
-
 volatile unsigned millisCountdown, millisCountUp;
 
 byte transmit(byte mask, byte value){
   if(!(PORTB & PB_TE_MASK)) { // interface must be in Talk direction
-    return ERR;
+    return DIR_BUG;
   }
 
   PORTC |= PC_DAV_MASK; // data not valid
   
   if((PINC & (PC_NRFD_MASK | PC_NDAC_MASK)) == (PC_NRFD_MASK | PC_NDAC_MASK)) {
-    return ERR;
+    return NO_LISTENERS;
   } else {
 #ifdef DEBUG
     char b[9];
@@ -170,25 +190,25 @@ byte transmit(byte mask, byte value){
     delayMicroseconds(2);
     
     // Wait until all acceptors are ready for data
-    countdown(TRANSMIT_TIMEOUT_MS);
+    countdown(TRANSMIT_TIMEOUT_10MS);
     while(!(PINC & PC_NRFD_MASK) && millisCountdown)
       ;
 
     if(millisCountdown == 0) {
-      Serial.println("NRFD was not raised within 500ms. Aborting transmit");
-      return TIMEOUT;
+      Serial.println("NRFD was not raised within timeout. Aborting transmit");
+      return TX_TIMEOUT;
     }
       
     PORTC &= ~PC_DAV_MASK; // data valid
     
     // Wait until all acceptors have accepted the data
-    countdown(TRANSMIT_TIMEOUT_MS);
+    countdown(TRANSMIT_TIMEOUT_10MS);
     while(!(PINC & PC_NDAC_MASK) && millisCountdown)
       ;
 
     if(millisCountdown == 0) {
-      Serial.println("NDAC was not raised within 500ms. Aborting transmit");
-      return TIMEOUT;
+      Serial.println("NDAC was not raised within timeout. Aborting transmit");
+      return TX_TIMEOUT;
     }
     
     PORTC |= PC_DAV_MASK; // data not valid
@@ -198,20 +218,20 @@ byte transmit(byte mask, byte value){
 
 byte receive(byte *value){
   if(PORTB & PB_TE_MASK) { // interface must be in Listen direction
-    return ERR;
+    return DIR_BUG;
   }
 
   PORTC &= ~PC_NDAC_MASK; // not accepted data
   PORTC |= PC_NRFD_MASK;  // ready for data
 
   // wait for data valid to go low (true)
-  countdown(10000);
+  countdown(read_timeout_10ms);
   while((PINC & PC_DAV_MASK) && millisCountdown)
     ;
 
   if(millisCountdown == 0) {
-    Serial.println("Data not valid within 10 sec. Aborting receive");
-    return TIMEOUT;
+    Serial.println("Data not valid within timeout. Aborting receive");
+    return RX_TIMEOUT;
   }
 
   PORTC &= ~PC_NRFD_MASK; // not ready for data
@@ -224,10 +244,10 @@ byte receive(byte *value){
   return res;
 }
 
-byte tx_data(const char str[]) {
+byte tx_data(const char str[], bool use_eoi) {
   mode(TE_TALK, DATA_NO_EOI);
   for(const char *p = str; *p; ++p) {
-    byte res = transmit(p[1] ? DATA_NO_EOI : DATA_EOI, *p);
+    byte res = transmit(!use_eoi || p[1] ? DATA_NO_EOI : DATA_EOI, *p);
     if(res != SUCCESS) {
       return res;
     }
@@ -243,19 +263,23 @@ byte rx_data(byte *buf, size_t max, size_t *count, bool is_binary) {
   size_t n = 0;
   for(byte *p = buf; n < max; ++n, ++p) {
     byte res = receive(p);
-    if(res == EOI || (!is_binary && *p == '\n')) {
+    if(res & IS_ERROR) {
+      return res;
+    } else if((res == EOI && read_until_eoi) || (!read_until_eoi && *p == read_until_char)) {
+      if(res == EOI && eot_enable) {
+        p[1] = eot_char;
+        ++n;
+      }
       *count = ++n;
       return SUCCESS;
-    } else if(res != SUCCESS) {
-      return res;
     }
   }
   *count = n;
   return BUFFER_FULL;
 }
 
-#define RECEIVE_BUFFER_SIZE 0x200
-static byte buf[RECEIVE_BUFFER_SIZE+1];
+#define RECEIVE_BUFFER_SIZE 0x100
+static byte buf[RECEIVE_BUFFER_SIZE+2];
   
 byte cmd(byte msg) {
   mode(TE_TALK, CMD_NO_EOI);
@@ -268,31 +292,32 @@ byte cmd(byte msg) {
 bool read_sesr = 0;
 bool message_available = 0;
 
-void serialpoll() {
+void serialpoll(byte addr) {
   byte stat;
   
-  cmd(MSG_UNLISTEN);
-  cmd(MSG_SER_POLL_ENB);
-  cmd(MSG_TALK | MY_SCOPE);
-  mode(TE_LISTEN, DATA_NO_EOI);
-  receive(&stat);
-  cmd(MSG_SER_POLL_DIS);
-  Serial.print("\nSRQ Status: ");
-  if(stat & 0b1000000) Serial.print(" RequestService");
-  if(stat & 0b0100000) {
-    Serial.print(" EventStatusBit");
-    read_sesr |= 1;
+  if(cmd(MSG_UNLISTEN) == SUCCESS &&
+     cmd(MSG_SER_POLL_ENB) == SUCCESS &&
+     cmd(MSG_TALK | addr) == SUCCESS &&
+     (mode(TE_LISTEN, DATA_NO_EOI), receive(&stat)) == SUCCESS &&
+     cmd(MSG_SER_POLL_DIS) == SUCCESS)
+  {
+    Serial.print("\nSRQ Status: ");
+    if(stat & 0b1000000) Serial.print(" RequestService");
+    if(stat & 0b0100000) {
+      Serial.print(" EventStatusBit");
+      read_sesr |= 1;
+    }
+    if(stat & 0b0010000) {
+      Serial.print(" MessageAvailable");
+      message_available |= 1;
+    }
+    Serial.println();
   }
-  if(stat & 0b0010000) {
-    Serial.print(" MessageAvailable");
-    message_available |= 1;
-  }
-  Serial.println();
 }
 
 bool check_srq() {
   if(!(PINC & PC_SRQ_MASK)) {
-    serialpoll();
+    serialpoll(addr);
     return 1;
   }
   return 0;
@@ -303,12 +328,14 @@ bool check(byte res) {
     case EOI:
     case SUCCESS:
       return 1;
-    case ERR:
-      Serial.println("Transmit error (NRFD & NDAC) - Is adapter plugged into bus and devices are powered on?\n"); 
+    case DIR_BUG:
+      Serial.println("Direction not configured correctly for transmit/receive operation - probably a bug\n"); 
       return 0;
-    case TIMEOUT: 
-      Serial.println("Timeout\n"); 
+    case NO_LISTENERS:
+      Serial.println("No listeners - Is adapter plugged into bus and devices are powered on?\n"); 
       return 0;
+    case TX_TIMEOUT: Serial.println("Transmit timeout\n"); return 0;
+    case RX_TIMEOUT: Serial.println("Receive timeout\n");  return 0;
   }
   return 0;
 }
@@ -335,19 +362,12 @@ void countdown(unsigned ms) {
 #define TEXT   0
 #define BINARY 1
 
-bool send_query(byte device, char *command, bool binary_mode, byte *buf, size_t sz) {
+bool device_listen(byte addr) {
   static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  Serial.print("?> ");
-  Serial.println(command);
   
-  bool ok = check(cmd(MSG_UNLISTEN)) &&
-            check(cmd(MSG_LISTEN | device)) &&
-            check(tx_data(command)) &&
-            check(cmd(MSG_UNLISTEN)) &&
-            check(cmd(MSG_UNTALK)) &&
-            check(cmd(MSG_TALK | device));
-  if(ok) {
+  if(check(cmd(MSG_TALK | addr))) {
     size_t n = 0, rx_total = 0, groups = 0;
+    size_t sz = RECEIVE_BUFFER_SIZE;
     byte res;
 
     millisCountUp = 0;
@@ -364,9 +384,8 @@ bool send_query(byte device, char *command, bool binary_mode, byte *buf, size_t 
         buf[n] = 0; // terminate buffer for caller convenience with short responses
 
         if(binary_mode) {
-          size_t i;
           buf[n] = buf[n+1] = buf[n+2] = 0; // zero out trailing octet group after defined data
-          for(i = 0; i < n; i += 3) {
+          for(size_t i = 0; i < n; i += 3) {
             byte n1 = buf[i] >> 2;
             byte n2 = (buf[i] << 4) | (buf[i+1] >> 4);
             byte n3 = (buf[i+1] << 2) | (buf[i+2] >> 6);
@@ -382,7 +401,9 @@ bool send_query(byte device, char *command, bool binary_mode, byte *buf, size_t 
             }
           }
         } else {
-          for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
+          if(cr_to_lf) {
+            for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
+          }
           Serial.write(buf, n);
         }
       } else {
@@ -410,7 +431,7 @@ bool send_command(byte device, const char *command) {
   
   return check(cmd(MSG_UNLISTEN)) &&
          check(cmd(MSG_LISTEN | device)) &&
-         check(tx_data(command)) &&
+         check(tx_data(command, command_eoi)) &&
          check(cmd(MSG_UNLISTEN)) &&
          check(cmd(MSG_UNTALK));
 }
@@ -433,8 +454,8 @@ void setup() {
 
   // set up 1ms interrupt
   TCCR1A = TCCR1C = 0;
-  TCCR1B = (1 << CS10); //B101; // clkIO/1 prescaler
-  OCR1A = 16000; // approx 1ms
+  TCCR1B = (1 << CS11); // clkIO/8 prescaler
+  OCR1A = 20000; // approx 10ms
   TIMSK1 = 0; //(1 << OCIE1A); // set output compare A match interrupt enable
 
   interrupts();
@@ -477,83 +498,178 @@ void setup() {
   }*/
 }
 
+void prologix_setting(byte *p, byte num_params, byte param_value) {
+  if(num_params) {
+    *p = param_value;
+  } else {
+    Serial.println(*p);
+  }
+}
+
 void loop() {
-  byte device = NO_DEVICE;
-  bool binary_mode = TEXT, prompt = 1;
-  
-  //Serial.setTimeout(60*60*1000L);
-  
-  Serial.println("At controller prompt, enter device number (0..30) to make that device current.");
-  Serial.println("At device prompt, enter commands. '$' returns to controller prompt.");
-  Serial.println("'$t' sets text mode for responses. '$b' sets binary (base64) mode for responses.");
   for(;;) {
     size_t n;
-    do {
-      if(prompt) {
-        prompt = 0;
-        if(device == NO_DEVICE) {
-          Serial.print("controller> ");
-        } else {
-          Serial.print(device);
-          Serial.print("> ");
-        }
-      }
-      
-      prompt = check_srq();
-      if(read_sesr) {
-        read_sesr = 0;
-        send_query(device, (char*)"*ESR?", TEXT, buf, RECEIVE_BUFFER_SIZE);
-        byte sesr = atoi((char*)buf);
-        if(sesr) {
-          Serial.print("\nEvent Status Register: ");
-          if(sesr & 0b10000000) Serial.print(" PowerOn");
-          if(sesr & 0b01000000) Serial.print(" UserRequest");
-          if(sesr & 0b00100000) Serial.print(" CommandError");
-          if(sesr & 0b00010000) Serial.print(" ExecutionError");
-          if(sesr & 0b00001000) Serial.print(" DeviceError");
-          if(sesr & 0b00000100) Serial.print(" QueryError");
-          if(sesr & 0b00000010) Serial.print(" RequestControl");
-          if(sesr & 0b00000001) Serial.print(" OperationComplete");
-          Serial.write('\n');
-          send_query(device, (char*)"EVMSG?", TEXT, buf, RECEIVE_BUFFER_SIZE);
-        }
-      }
-      
-      n = Serial.readBytesUntil('\n', buf, RECEIVE_BUFFER_SIZE);
-    } while(n == 0);
-    Serial.write('\n');
+    bool controller_command = 0;
 
-    prompt = 1;
-    
-    buf[n] = 0;
-    if(n) {
-      if(isdigit(buf[0])) {
-        unsigned d = atoi((char*)buf);
-        if(d < 31) {
-          device = d;
-          Serial.print("Current device changed to ");
-          Serial.print(d);
-          Serial.println(". Enter $ to return to controller prompt.");
-        } else {
-          Serial.println("Device ID must be between 0 and 30.");
-        }
-      } else if(buf[0] == '$') {
-        if(toupper(buf[1]) == 'T') {
-          binary_mode = TEXT;
-          Serial.println("Response mode: Text");
-        } else if(toupper(buf[1]) == 'B') {
-          binary_mode = BINARY;
-          Serial.println("Response mode: Binary (base64)");
-        } else {
-          device = NO_DEVICE;
-        }
-      } else if(device != NO_DEVICE) {
-        if(buf[n-1] == '?') {
-          send_query(device, (char*)buf, binary_mode, buf, RECEIVE_BUFFER_SIZE);
-        } else {
-          send_command(device, (char*)buf);
+    /*
+    prompt = check_srq();
+    if(read_sesr) {
+      read_sesr = 0;
+      send_query(device, (char*)"*ESR?", TEXT, buf, RECEIVE_BUFFER_SIZE);
+      byte sesr = atoi((char*)buf);
+      if(sesr) {
+        Serial.print("\nEvent Status Register: ");
+        if(sesr & 0b10000000) Serial.print(" PowerOn");
+        if(sesr & 0b01000000) Serial.print(" UserRequest");
+        if(sesr & 0b00100000) Serial.print(" CommandError");
+        if(sesr & 0b00010000) Serial.print(" ExecutionError");
+        if(sesr & 0b00001000) Serial.print(" DeviceError");
+        if(sesr & 0b00000100) Serial.print(" QueryError");
+        if(sesr & 0b00000010) Serial.print(" RequestControl");
+        if(sesr & 0b00000001) Serial.print(" OperationComplete");
+        Serial.write('\n');
+        send_query(device, (char*)"EVMSG?", TEXT, buf, RECEIVE_BUFFER_SIZE);
+      }
+    }*/
+
+    bool escape_next = 0;
+    for(n = 0; n < RECEIVE_BUFFER_SIZE;) {
+      int c = Serial.read();
+      if(c != -1) {
+        if(!escape_next && c == ESC) {
+          escape_next = 1;
+        } else if(!escape_next && (c == '\n' || c == '\r')) {
+          break;
+        } else if(escape_next || (c != '\n' && c != '\r' && c != '+' && c != ESC)) {
+          buf[n++] = c;
+          escape_next = 0;
+        } else if(n == 0 && c == '+') { // unescaped + at beginning of input starts a controller command
+          buf[n++] = c;
+          controller_command = 1;
+        } else if(controller_command) {
+          if(n == 1 && c == '+') { // the 2nd + that is part of a controller command
+            buf[n++] = c;
+          } else {
+            controller_command = 0; // this is really a kind of syntax error
+            n = 0; // throw away the partial command
+          }
         }
       }
     }
+    
+    if(controller_command) {
+      char *command = (char*)buf + 2;
+      byte num_params = 0;
+      int param_values[3];
+      char *param_strings[3];
+      byte i;
+      // Find end of command word
+      for(i = 2; i < n && !isspace(buf[i]); ++i)
+        ;
+      buf[i++] = buf[n] = 0; // terminate command word, and entire command
+      
+      while(num_params < 3 && i < n) {
+        while(buf[i] && isspace(buf[i])) ++i;
+        param_strings[num_params] = buf+i;
+        param_values[num_params++] = atoi((char*)(buf+i));
+        while(buf[i] && !isspace(buf[i])) ++i;
+        buf[i] = 0; // terminate parameter string
+      }
+
+      if(!strcmp(command, "addr")) {
+        if(num_params == 0) {
+          Serial.println(addr);
+          if(sec_addr) Serial.println(sec_addr);
+        } else if(num_params == 1 && param_values[0] >= 0 && param_values[0] <= 30) {
+          addr = param_values[0];
+          sec_addr = 0;
+        } else if(param_values[1] >= 96 && param_values[1] <= 126) {
+          addr = param_values[0];
+          sec_addr = param_values[1];
+        }
+      } else if(!strcmp(command, "auto")) {
+        prologix_setting(&read_after_write, num_params, param_values[0]);
+        
+        if(num_params && addr != NO_DEVICE) {
+          if(param_values[0]) { // address device to TALK
+            cmd(MSG_TALK | addr);
+          } else { // address device to LISTEN
+            cmd(MSG_LISTEN | addr);
+          }
+        }
+      } else if(!strcmp(command, "clr")) {
+        if(addr != NO_DEVICE) {
+          /*TODO*/
+        }
+      } else if(!strcmp(command, "eoi")) {
+        prologix_setting(&command_eoi, num_params, param_values[0]);
+      } else if(!strcmp(command, "eos")) {
+        prologix_setting(&eos, num_params, param_values[0]);
+      } else if(!strcmp(command, "eot_enable")) {
+        prologix_setting(&eot_enable, num_params, param_values[0]);
+      } else if(!strcmp(command, "eot_char")) {
+        prologix_setting(&eot_char, num_params, param_values[0]);
+      } else if(!strcmp(command, "ifc")) {
+        PORTC &= ~PC_IFC_MASK; // set IFC true on GPIB
+        delayMicroseconds(150);
+        PORTC |= PC_IFC_MASK; // set IFC false on GPIB
+      } else if(!strcmp(command, "llo")) {
+        /*TODO*/
+      } else if(!strcmp(command, "lon")) {
+        prologix_setting(&listen_only, num_params, param_values[0]);
+      } else if(!strcmp(command, "mode")) {
+        Serial.println("Only controller mode is currently supported");
+      } else if(!strcmp(command, "read")) {
+        if(num_params == 0) {
+          read_until_eoi = 1;
+        } else {
+          read_until_eoi = !strcmp(param_strings[0], "eoi");
+          read_until_char = param_values[0];
+        }
+        if(addr != NO_DEVICE) {
+          device_listen(addr);
+        }
+      } else if(!strcmp(command, "read_tmo_ms")) {
+        if(num_params == 0) {
+          Serial.println(read_timeout_10ms * 10);
+        } else {
+          read_timeout_10ms = param_values[0]/10;
+        }
+      } else if(!strcmp(command, "rst")) {
+        /*TODO - probably use watchdog timer*/
+      } else if(!strcmp(command, "savecfg")) {
+        /*not impl*/
+      } else if(!strcmp(command, "spoll")) {
+        serialpoll(num_params ? param_values[0] : addr);
+      } else if(!strcmp(command, "srq")) {
+        Serial.println(!(PINC & PC_SRQ_MASK));
+      } else if(!strcmp(command, "status")) {
+        prologix_setting(&status_byte, num_params, param_values[0]);
+      } else if(!strcmp(command, "trg")) {
+        /*TODO*/
+      } else if(!strcmp(command, "ver")) {
+        Serial.println(CTLR_VERSION);
+      } else if(!strcmp(command, "help")) {
+        /*TODO*/
+      } else if(!strcmp(command, "b64")) {
+        prologix_setting(&binary_mode, num_params, param_values[0]);
+      } else if(!strcmp(command, "cr2lf")) {
+        prologix_setting(&cr_to_lf, num_params, param_values[0]);
+      } else if(!strcmp(command, "verbose")) {
+        prologix_setting(&verbose, num_params, param_values[0]);
+      }
+    } else {
+      if(!(eos & 0b10)) buf[n++] = '\r';
+      if(!(eos & 0b01)) buf[n++] = '\n';
+      buf[n] = 0;
+      
+      if(addr != NO_DEVICE) {
+        send_command(addr, (char*)buf);
+        if(read_after_write) {
+          device_listen(addr);
+        }
+      }
+    }
+    
   }
 }

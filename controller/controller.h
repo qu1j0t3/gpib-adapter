@@ -47,12 +47,15 @@
 #define CMD_NO_EOI   (PB_PE_TOTEMPOLE | PB_EOI_MASK)
 #define DATA_EOI     (PB_PE_TOTEMPOLE | PB_ATN_MASK)
 
-#define ERR         0
-#define SUCCESS     1
-#define EOI         2 // if a received byte is EOI
-#define TIMEOUT     3
-#define SRQ         4
-#define BUFFER_FULL 5
+// Result codes (transmit/receive)
+#define IS_ERROR 1  // this bit indicates an error
+#define DIR_BUG      ((1*2)|IS_ERROR)
+#define NO_LISTENERS ((2*2)|IS_ERROR)
+#define TX_TIMEOUT   ((3*2)|IS_ERROR)
+#define RX_TIMEOUT   ((4*2)|IS_ERROR)
+#define SUCCESS      0
+#define EOI          (1*2) // if a received byte is EOI
+#define BUFFER_FULL  (2*2)
 
 // X=don't care (received message); X=shall not drive (transmitted)
 // Y=don't care (transmitted);      Y=don't care (received)
@@ -87,7 +90,7 @@
 #define MSG_SER_POLL_ENB  0b0011000
 #define MSG_SER_POLL_DIS  0b0011001
 
-#define NO_DEVICE 31
+#define NO_DEVICE           0b11111
 
 void mode(bool talk, byte atn_eoi_pe);
 
