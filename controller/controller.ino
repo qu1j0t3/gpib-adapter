@@ -80,7 +80,7 @@
 
 #include "controller.h"
 
-const char *CTLR_VERSION = "2018-06-16 Controller by Toby Thain <toby@telegraphics.com.au>";
+const char *CTLR_VERSION = "2018-06-16 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
 
 #define PB_OUTPUTS    0b110100 // PORTB Pins that are always outputs
 #define PB_BIDI_FWD   0b001011 // PORTB Bidirectional pins that follow TALK ENABLE (transmit when TE is high)
@@ -108,7 +108,7 @@ unsigned read_timeout_10ms = 150;
 byte status_byte = 0;
 
 // nonstandard
-byte verbose = 1;
+byte verbose = 0;
 byte binary_mode = 0;
 byte cr_to_lf = 0;
 
@@ -194,8 +194,7 @@ byte transmit(byte mask, byte value){
     while(!(PINC & PC_NRFD_MASK) && millisCountdown)
       ;
 
-    if(millisCountdown == 0) {
-      Serial.println("NRFD was not raised within timeout. Aborting transmit");
+    if(millisCountdown == 0) { // NRFD was not raised within timeout
       return TX_TIMEOUT;
     }
       
@@ -206,8 +205,7 @@ byte transmit(byte mask, byte value){
     while(!(PINC & PC_NDAC_MASK) && millisCountdown)
       ;
 
-    if(millisCountdown == 0) {
-      Serial.println("NDAC was not raised within timeout. Aborting transmit");
+    if(millisCountdown == 0) { // NDAC was not raised within timeout
       return TX_TIMEOUT;
     }
     
@@ -229,8 +227,7 @@ byte receive(byte *value){
   while((PINC & PC_DAV_MASK) && millisCountdown)
     ;
 
-  if(millisCountdown == 0) {
-    Serial.println("Data not valid within timeout. Aborting receive");
+  if(millisCountdown == 0) { // Data not valid within timeout
     return RX_TIMEOUT;
   }
 
@@ -244,10 +241,10 @@ byte receive(byte *value){
   return res;
 }
 
-byte tx_data(const char str[], bool use_eoi) {
+byte tx_data(byte str[], bool use_eoi, size_t n) {
   mode(TE_TALK, DATA_NO_EOI);
-  for(const char *p = str; *p; ++p) {
-    byte res = transmit(!use_eoi || p[1] ? DATA_NO_EOI : DATA_EOI, *p);
+  for(size_t i = 0; i < n; ++i) {
+    byte res = transmit(i == n-1 && use_eoi ? DATA_EOI : DATA_NO_EOI, str[i]);
     if(res != SUCCESS) {
       return res;
     }
@@ -255,7 +252,7 @@ byte tx_data(const char str[], bool use_eoi) {
   return SUCCESS;
 }
 
-byte rx_data(byte *buf, size_t max, size_t *count, bool is_binary) {
+byte rx_data(byte *buf, size_t max, size_t *count) {
   // This might be called in a block loop, so don't bother
   // changing direction unless necessary.
   if(PORTB & PB_TE_MASK) mode(TE_LISTEN, DATA_NO_EOI);
@@ -329,13 +326,17 @@ bool check(byte res) {
     case SUCCESS:
       return 1;
     case DIR_BUG:
-      Serial.println("Direction not configured correctly for transmit/receive operation - probably a bug\n"); 
+      Serial.println("Direction not configured correctly for transmit/receive - probably a bug\n"); 
       return 0;
     case NO_LISTENERS:
-      Serial.println("No listeners - Is adapter plugged into bus and devices are powered on?\n"); 
+      if(verbose) Serial.println("No listeners - Is adapter plugged into bus and devices are powered on?\n"); 
       return 0;
-    case TX_TIMEOUT: Serial.println("Transmit timeout\n"); return 0;
-    case RX_TIMEOUT: Serial.println("Receive timeout\n");  return 0;
+    case TX_TIMEOUT:
+      if(verbose) Serial.println("Transmit timeout\n"); 
+      return 0;
+    case RX_TIMEOUT:
+      if(verbose) Serial.println("Receive timeout\n");  
+      return 0;
   }
   return 0;
 }
@@ -362,7 +363,7 @@ void countdown(unsigned ms) {
 #define TEXT   0
 #define BINARY 1
 
-bool device_listen(byte addr) {
+bool device_listen(byte addr, bool binary_mode) {
   static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   
   if(check(cmd(MSG_TALK | addr))) {
@@ -374,12 +375,14 @@ bool device_listen(byte addr) {
     
     if(binary_mode) {
       sz -= (sz % 3) + 3; // make buffer a multiple of 3 for correct Base64 encoding
-      Serial.println("%%% Base64 data:");
     }
 
     do {
-      res = rx_data(buf, sz, &n, binary_mode);
+      res = rx_data(buf, sz, &n);
       if(res == SUCCESS || res == BUFFER_FULL) {
+        if(verbose && binary_mode && !rx_total) {
+          Serial.println("%%% Base64 data:");
+        }
         rx_total += n;
         buf[n] = 0; // terminate buffer for caller convenience with short responses
 
@@ -407,12 +410,13 @@ bool device_listen(byte addr) {
           Serial.write(buf, n);
         }
       } else {
+        check(res);
         return 0;
       }
     } while(res == BUFFER_FULL);
-    if(binary_mode) Serial.println("\n%%% Base64 end");
+    if(verbose && binary_mode) Serial.println("\n%%% Base64 end");
 
-    if(rx_total > sz) { // Only show stats on "long" responses
+    if(verbose && rx_total > sz) { // Only show stats on "long" responses
       Serial.print("  Received bytes: ");
       Serial.println(rx_total);
       Serial.print("  Time (ms): ");
@@ -426,12 +430,14 @@ bool device_listen(byte addr) {
 }
 
 bool send_command(byte device, const char *command) {
-  Serial.print("!> ");
-  Serial.println(command);
+  if(verbose) {
+    Serial.print("> ");
+    Serial.println(command);
+  }
   
   return check(cmd(MSG_UNLISTEN)) &&
          check(cmd(MSG_LISTEN | device)) &&
-         check(tx_data(command, command_eoi)) &&
+         check(tx_data((byte*)command, command_eoi, strlen(command))) &&
          check(cmd(MSG_UNLISTEN)) &&
          check(cmd(MSG_UNTALK));
 }
@@ -464,7 +470,17 @@ void setup() {
   //output_test(1);
   //input_test(1);
 
-  Serial.println("\n\n\nController start");
+  Serial.println("\n\n");
+  Serial.print(CTLR_VERSION);
+  Serial.print("\nReceive timeout ");
+  Serial.print(read_timeout_10ms*10);
+  Serial.println(" ms (set up to 65530 with  ++read_tmo_ms <milliseconds> )");
+  Serial.print("Transmit timeout ");
+  Serial.print(TRANSMIT_TIMEOUT_10MS*10);
+  Serial.println(" ms");
+  //Serial.println("Use  ++help  for Prologix command help.");
+  Serial.println("Use  ++addr <gpib_address>  to address a specific device.");
+  Serial.println("VERBOSE/INTERACTIVE MODE IS OFF. Use  ++v 1  to enable it.\n");
 /*
   if(send_query(MY_SCOPE, "*IDN?",    TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
   if(send_query(MY_SCOPE, "acquire?", TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
@@ -511,26 +527,29 @@ void loop() {
     size_t n;
     bool controller_command = 0;
 
-    /*
-    prompt = check_srq();
-    if(read_sesr) {
-      read_sesr = 0;
-      send_query(device, (char*)"*ESR?", TEXT, buf, RECEIVE_BUFFER_SIZE);
-      byte sesr = atoi((char*)buf);
-      if(sesr) {
-        Serial.print("\nEvent Status Register: ");
-        if(sesr & 0b10000000) Serial.print(" PowerOn");
-        if(sesr & 0b01000000) Serial.print(" UserRequest");
-        if(sesr & 0b00100000) Serial.print(" CommandError");
-        if(sesr & 0b00010000) Serial.print(" ExecutionError");
-        if(sesr & 0b00001000) Serial.print(" DeviceError");
-        if(sesr & 0b00000100) Serial.print(" QueryError");
-        if(sesr & 0b00000010) Serial.print(" RequestControl");
-        if(sesr & 0b00000001) Serial.print(" OperationComplete");
-        Serial.write('\n');
-        send_query(device, (char*)"EVMSG?", TEXT, buf, RECEIVE_BUFFER_SIZE);
+    if(verbose && addr != NO_DEVICE) {
+      check_srq();
+      if(read_sesr) {
+        read_sesr = 0;
+        send_command(addr, (char*)"*ESR?");
+        device_listen(addr, 0);
+        byte sesr = atoi((char*)buf);
+        if(sesr) {
+          Serial.print("\nEvent Status Register: ");
+          if(sesr & 0b10000000) Serial.print(" PowerOn");
+          if(sesr & 0b01000000) Serial.print(" UserRequest");
+          if(sesr & 0b00100000) Serial.print(" CommandError");
+          if(sesr & 0b00010000) Serial.print(" ExecutionError");
+          if(sesr & 0b00001000) Serial.print(" DeviceError");
+          if(sesr & 0b00000100) Serial.print(" QueryError");
+          if(sesr & 0b00000010) Serial.print(" RequestControl");
+          if(sesr & 0b00000001) Serial.print(" OperationComplete");
+          Serial.write('\n');
+          send_command(addr, "EVMSG?");
+          device_listen(addr, 0);
+        }
       }
-    }*/
+    }
 
     bool escape_next = 0;
     for(n = 0; n < RECEIVE_BUFFER_SIZE;) {
@@ -560,7 +579,7 @@ void loop() {
     if(controller_command) {
       char *command = (char*)buf + 2;
       byte num_params = 0;
-      int param_values[3];
+      unsigned param_values[3];
       char *param_strings[3];
       byte i;
       // Find end of command word
@@ -570,8 +589,8 @@ void loop() {
       
       while(num_params < 3 && i < n) {
         while(buf[i] && isspace(buf[i])) ++i;
-        param_strings[num_params] = buf+i;
-        param_values[num_params++] = atoi((char*)(buf+i));
+        param_strings[num_params] = (char*)buf + i;
+        param_values[num_params++] = atol((char*)buf + i);
         while(buf[i] && !isspace(buf[i])) ++i;
         buf[i] = 0; // terminate parameter string
       }
@@ -580,7 +599,7 @@ void loop() {
         if(num_params == 0) {
           Serial.println(addr);
           if(sec_addr) Serial.println(sec_addr);
-        } else if(num_params == 1 && param_values[0] >= 0 && param_values[0] <= 30) {
+        } else if(num_params == 1 && param_values[0] <= 30) {
           addr = param_values[0];
           sec_addr = 0;
         } else if(param_values[1] >= 96 && param_values[1] <= 126) {
@@ -627,7 +646,7 @@ void loop() {
           read_until_char = param_values[0];
         }
         if(addr != NO_DEVICE) {
-          device_listen(addr);
+          device_listen(addr, binary_mode);
         }
       } else if(!strcmp(command, "read_tmo_ms")) {
         if(num_params == 0) {
@@ -655,8 +674,11 @@ void loop() {
         prologix_setting(&binary_mode, num_params, param_values[0]);
       } else if(!strcmp(command, "cr2lf")) {
         prologix_setting(&cr_to_lf, num_params, param_values[0]);
-      } else if(!strcmp(command, "verbose")) {
+      } else if(!strcmp(command, "verbose") || !strcmp(command, "v")) {
         prologix_setting(&verbose, num_params, param_values[0]);
+      } else if(verbose) {
+        Serial.print("Unrecognised controller command: ");
+        Serial.println(command);
       }
     } else {
       if(!(eos & 0b10)) buf[n++] = '\r';
@@ -664,12 +686,13 @@ void loop() {
       buf[n] = 0;
       
       if(addr != NO_DEVICE) {
-        send_command(addr, (char*)buf);
+        send_command(addr, (char*)buf); // FIXME - will stop at a NUL byte
         if(read_after_write) {
-          device_listen(addr);
+          device_listen(addr, binary_mode);
         }
+      } else if(verbose) {
+        Serial.println("No device address is set. Use ++addr <address>");
       }
     }
-    
   }
 }
