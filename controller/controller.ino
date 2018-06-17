@@ -105,7 +105,7 @@ byte eos = 3;
 byte eot_enable = 0;
 byte eot_char;
 byte listen_only = 0;
-unsigned read_timeout_10ms = 150;
+unsigned read_timeout_10ms = 300;
 byte status_byte = 0;
 
 // nonstandard
