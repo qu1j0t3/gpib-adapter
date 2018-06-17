@@ -149,7 +149,7 @@ void mode(bool talk, byte atn_eoi_pe){
     DDRC |= PC_NRFD_MASK;
     DDRC |= PC_NDAC_MASK;
 
-    // EOI follows direction of Talk Enable, UNLESS ATN is LOW when it is the opposite of Talk Enable.
+    // EOI follows direction of Talk Enable, UNLESS ATN is LOW, when it is the opposite of Talk Enable.
     if(!(atn_eoi_pe & PB_ATN_MASK)) {
       PORTB |= PB_EOI_MASK;
       DDRB  |= PB_EOI_MASK; // EOI is output
@@ -326,10 +326,10 @@ bool check(byte res) {
     case SUCCESS:
       return 1;
     case DIR_BUG:
-      Serial.println("Direction not configured correctly for transmit/receive - probably a bug\n"); 
+      Serial.println("Dir not configured correctly for tx/rx - bug?\n"); 
       return 0;
     case NO_LISTENERS:
-      if(verbose) Serial.println("No listeners - Is adapter plugged into bus and devices are powered on?\n"); 
+      if(verbose) Serial.println("No listeners - Adapter plugged in and devices on?\n"); 
       return 0;
     case TX_TIMEOUT:
       if(verbose) Serial.println("Transmit timeout\n"); 
@@ -359,9 +359,6 @@ void countdown(unsigned ms) {
   millisCountdown = ms;
   TIMSK1 = (1 << OCIE1A);
 }
-
-#define TEXT   0
-#define BINARY 1
 
 bool device_listen(byte addr, bool binary_mode) {
   static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -430,6 +427,11 @@ bool device_listen(byte addr, bool binary_mode) {
 }
 
 bool send_command(byte device, const char *command) {
+  if(device == NO_DEVICE){
+    if(verbose) Serial.println("No device address set. Use ++addr <address>");
+    return 0;
+  }
+  
   if(verbose) {
     Serial.print("> ");
     Serial.println(command);
@@ -458,7 +460,7 @@ void setup() {
 
   Serial.begin(115200);
 
-  // set up 1ms interrupt
+  // set up 10ms interrupt
   TCCR1A = TCCR1C = 0;
   TCCR1B = (1 << CS11); // clkIO/8 prescaler
   OCR1A = 20000; // approx 10ms
@@ -474,13 +476,13 @@ void setup() {
   Serial.print(CTLR_VERSION);
   Serial.print("\nReceive timeout ");
   Serial.print(read_timeout_10ms*10);
-  Serial.println(" ms (set up to 65530 with  ++read_tmo_ms <milliseconds> )");
+  Serial.println(" ms (set up to 65530 with  ++read_tmo_ms <ms> )");
   Serial.print("Transmit timeout ");
   Serial.print(TRANSMIT_TIMEOUT_10MS*10);
   Serial.println(" ms");
-  //Serial.println("Use  ++help  for Prologix command help.");
   Serial.println("Use  ++addr <gpib_address>  to address a specific device.");
-  Serial.println("VERBOSE/INTERACTIVE MODE IS OFF. Use  ++v 1  to enable it.\n");
+  Serial.println("Use  ++v 1  to enable interactive mode.\n");
+  Serial.println("Also see  ++help");
 /*
   if(send_query(MY_SCOPE, "*IDN?",    TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
   if(send_query(MY_SCOPE, "acquire?", TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
@@ -579,8 +581,8 @@ void loop() {
     if(controller_command) {
       char *command = (char*)buf + 2;
       byte num_params = 0;
-      unsigned param_values[3];
-      char *param_strings[3];
+      byte param_values[30];
+      char *first_param = NULL;
       byte i;
       // Find end of command word
       for(i = 2; i < n && !isspace(buf[i]); ++i)
@@ -589,8 +591,8 @@ void loop() {
       
       while(num_params < 3 && i < n) {
         while(buf[i] && isspace(buf[i])) ++i;
-        param_strings[num_params] = (char*)buf + i;
-        param_values[num_params++] = atol((char*)buf + i);
+        if(num_params == 0) first_param = (char*)buf + i;
+        param_values[num_params++] = atoi((char*)buf + i);
         while(buf[i] && !isspace(buf[i])) ++i;
         buf[i] = 0; // terminate parameter string
       }
@@ -617,9 +619,8 @@ void loop() {
           }
         }
       } else if(!strcmp(command, "clr")) {
-        if(addr != NO_DEVICE) {
-          /*TODO*/
-        }
+        static char sel_dev_clr[] = {MSG_SEL_DEV_CLR, 0};
+        send_command(addr, sel_dev_clr);
       } else if(!strcmp(command, "eoi")) {
         prologix_setting(&command_eoi, num_params, param_values[0]);
       } else if(!strcmp(command, "eos")) {
@@ -633,16 +634,20 @@ void loop() {
         delayMicroseconds(150);
         PORTC |= PC_IFC_MASK; // set IFC false on GPIB
       } else if(!strcmp(command, "llo")) {
-        /*TODO*/
+        static char local_lockout[] = {MSG_LOCALLOCKOUT, 0};
+        send_command(addr, local_lockout);
+      } else if(!strcmp(command, "loc")) {
+        static char go_to_local[] = {MSG_GO_TO_LOCAL, 0};
+        send_command(addr, go_to_local);
       } else if(!strcmp(command, "lon")) {
         prologix_setting(&listen_only, num_params, param_values[0]);
       } else if(!strcmp(command, "mode")) {
-        Serial.println("Only controller mode is currently supported");
+        Serial.println("Only controller mode is supported");
       } else if(!strcmp(command, "read")) {
         if(num_params == 0) {
           read_until_eoi = 1;
         } else {
-          read_until_eoi = !strcmp(param_strings[0], "eoi");
+          read_until_eoi = !strcmp(first_param, "eoi");
           read_until_char = param_values[0];
         }
         if(addr != NO_DEVICE) {
@@ -652,24 +657,66 @@ void loop() {
         if(num_params == 0) {
           Serial.println(read_timeout_10ms * 10);
         } else {
-          read_timeout_10ms = param_values[0]/10;
+          read_timeout_10ms = atol(first_param)/10;
         }
       } else if(!strcmp(command, "rst")) {
         /*TODO - probably use watchdog timer*/
-      } else if(!strcmp(command, "savecfg")) {
-        /*not impl*/
-      } else if(!strcmp(command, "spoll")) {
+      } /*else if(!strcmp(command, "savecfg")) {
+        not impl
+      }*/ else if(!strcmp(command, "spoll")) {
         serialpoll(num_params ? param_values[0] : addr);
       } else if(!strcmp(command, "srq")) {
         Serial.println(!(PINC & PC_SRQ_MASK));
       } else if(!strcmp(command, "status")) {
         prologix_setting(&status_byte, num_params, param_values[0]);
       } else if(!strcmp(command, "trg")) {
-        /*TODO*/
+        static char group_exec_trigger[] = {MSG_GRP_EXEC_TRG, 0};
+        if(num_params == 0) {
+          send_command(addr, group_exec_trigger);
+        } else {
+          if(check(cmd(MSG_UNLISTEN))) {
+            for(byte i = 0; i < num_params; ++i) {
+              if(param_values[i] <= 30 && !check(cmd(MSG_LISTEN | param_values[i]))) {
+                break;
+              }
+            }
+            if(i == num_params) {
+              check(cmd(MSG_GRP_EXEC_TRG));
+            }
+          }
+        }
       } else if(!strcmp(command, "ver")) {
         Serial.println(CTLR_VERSION);
       } else if(!strcmp(command, "help")) {
-        /*TODO*/
+        
+        Serial.println("Supported Prologix commands:");
+        Serial.println("  addr [<pad> [<sad>]]");
+        Serial.println("  auto [0|1]");
+        Serial.println("  clr");
+        Serial.println("  eoi [0|1]");
+        Serial.println("  eos [0|1|2|3]");
+        Serial.println("  eot_enable [0|1]");
+        Serial.println("  eot_char [<char>]");
+        Serial.println("  ifc");
+        Serial.println("  llo");
+        Serial.println("  loc");
+        //Serial.println("lon")) {
+        //Serial.println("mode")) {
+        Serial.println("  read [eoi|<char>]");
+        Serial.println("  read_tmo_ms [<time>]");
+        //Serial.println("  rst");
+        //Serial.println("savecfg")) {
+        Serial.println("  spoll [<pad> [<sad>]]");
+        Serial.println("  srq");
+        //Serial.println("status")) {
+        Serial.println("  trg [<pad1> [<sad1>] ...]");
+        Serial.println("  ver");
+        Serial.println("  help");
+        Serial.println("Non-standard commands:");
+        Serial.println("  b64 [0|1]        - base64 format for response");
+        Serial.println("  cr2lf [0|1]      - map CR to LF in response");
+        Serial.println("  v[erbose] [0|1]  - interactive mode");
+        
       } else if(!strcmp(command, "b64")) {
         prologix_setting(&binary_mode, num_params, param_values[0]);
       } else if(!strcmp(command, "cr2lf")) {
@@ -677,7 +724,7 @@ void loop() {
       } else if(!strcmp(command, "verbose") || !strcmp(command, "v")) {
         prologix_setting(&verbose, num_params, param_values[0]);
       } else if(verbose) {
-        Serial.print("Unrecognised controller command: ");
+        Serial.print("Unknown command: ");
         Serial.println(command);
       }
     } else {
@@ -685,13 +732,8 @@ void loop() {
       if(!(eos & 0b01)) buf[n++] = '\n';
       buf[n] = 0;
       
-      if(addr != NO_DEVICE) {
-        send_command(addr, (char*)buf); // FIXME - will stop at a NUL byte
-        if(read_after_write) {
-          device_listen(addr, binary_mode);
-        }
-      } else if(verbose) {
-        Serial.println("No device address is set. Use ++addr <address>");
+      if(send_command(addr, (char*)buf) && read_after_write) { // FIXME - will stop at a NUL byte
+        device_listen(addr, binary_mode);
       }
     }
   }
