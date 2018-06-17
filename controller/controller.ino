@@ -277,7 +277,7 @@ byte rx_data(byte *buf, size_t max, size_t *count) {
 }
 
 #define RECEIVE_BUFFER_SIZE 0x100
-static byte buf[RECEIVE_BUFFER_SIZE+2];
+static byte main_buffer[RECEIVE_BUFFER_SIZE+3];
   
 byte cmd(byte msg) {
   mode(TE_TALK, CMD_NO_EOI);
@@ -361,11 +361,28 @@ void countdown(unsigned ms) {
   TIMSK1 = (1 << OCIE1A);
 }
 
-bool device_listen(byte addr, bool binary_mode) {
+byte base64_groups;
+
+void send_base64(byte *buf, size_t n) {
   static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  
+  for(size_t i = 0; i < n; i += 3) {
+    b1 = (i+1) < n ? buf[i+1] : 0;
+    b2 = (i+2) < n ? buf[i+2] : 0;
+    Serial.write(base64[buf[i] >> 2]);                                          // Always defined
+    Serial.write(base64[((buf[i] << 4) | (b1 >> 4)) & 0b111111]);               // Always defined
+    Serial.write((i+1) < n ? base64[((b1 << 2) | (b2 >> 6)) & 0b111111] : '='); // Only defined if we have data for p[1] and p[2]
+    Serial.write((i+2) < n ? base64[b2 & 0b111111] : '=');                      // Only defined if we have data for p[2]
+    ++base64_groups;
+    if(base64_groups == 18) {
+      Serial.write('\n');
+      base64_groups = 0;
+    }
+  }
+}
+
+bool device_listen(byte addr, bool binary_mode) {  
   if(check(cmd(MSG_TALK | addr))) {
-    size_t n = 0, rx_total = 0, groups = 0;
+    size_t n = 0, rx_total = 0;
     size_t sz = RECEIVE_BUFFER_SIZE;
     byte res;
 
@@ -373,39 +390,25 @@ bool device_listen(byte addr, bool binary_mode) {
     
     if(binary_mode) {
       sz -= (sz % 3) + 3; // make buffer a multiple of 3 for correct Base64 encoding
+      base64_groups = 0;
     }
 
     do {
-      res = rx_data(buf, sz, &n);
+      res = rx_data(main_buffer, sz, &n);
       if(res == SUCCESS || res == BUFFER_FULL) {
         if(verbose && binary_mode && !rx_total) {
           Serial.println("%%% Base64 data:");
         }
         rx_total += n;
-        buf[n] = 0; // terminate buffer for caller convenience with short responses
+        main_buffer[n] = 0; // terminate buffer for caller convenience with short responses
 
         if(binary_mode) {
-          buf[n] = buf[n+1] = buf[n+2] = 0; // zero out trailing octet group after defined data
-          for(size_t i = 0; i < n; i += 3) {
-            byte n1 = buf[i] >> 2;
-            byte n2 = (buf[i] << 4) | (buf[i+1] >> 4);
-            byte n3 = (buf[i+1] << 2) | (buf[i+2] >> 6);
-            byte n4 = buf[i+2];
-            Serial.write(base64[n1]);                             // Always defined
-            Serial.write(base64[n2 & 0b111111]);                  // Always defined
-            Serial.write(i >= n-1 ? '=' : base64[n3 & 0b111111]); // Only defined if we have data for p[1] and p[2]
-            Serial.write(i >= n-2 ? '=' : base64[n4 & 0b111111]); // Only defined if we have data for p[2]
-            ++groups;
-            if(groups == 18) {
-              Serial.write('\n');
-              groups = 0;
-            }
-          }
+          send_base64(main_buffer, n);
         } else {
           if(cr_to_lf) {
-            for(size_t i = 0; i < n; ++i) if(buf[i] == '\r') buf[i] = '\n';
+            for(size_t i = 0; i < n; ++i) if(main_buffer[i] == '\r') main_buffer[i] = '\n';
           }
-          Serial.write(buf, n);
+          Serial.write(main_buffer, n);
         }
       } else {
         check(res);
@@ -485,7 +488,8 @@ void setup() {
   //input_test(1);
 
   Serial.println("\n\n");
-  Serial.print(CTLR_VERSION);
+  Serial.println(CTLR_VERSION);
+  /*
   Serial.print("\nReceive timeout ");
   Serial.print(read_timeout_10ms*10);
   Serial.println(" ms (set up to 65530 with  ++read_tmo_ms <ms> )");
@@ -494,19 +498,20 @@ void setup() {
   Serial.println(" ms");
   Serial.println("Use  ++addr <gpib_address>  to address a specific device.");
   Serial.println("Use  ++v 1  to enable interactive mode.");
-  Serial.println("Also see  ++help");
+  */
+  Serial.println("See  ++help");
 /*
-  if(send_query(MY_SCOPE, "*IDN?",    TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
-  if(send_query(MY_SCOPE, "acquire?", TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
+  if(send_query(MY_SCOPE, "*IDN?",    TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
+  if(send_query(MY_SCOPE, "acquire?", TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
 
   if(send_command(MY_SCOPE, "data:source ch1") 
   && send_command(MY_SCOPE, "data:encdg ascii")
   && send_command(MY_SCOPE, "data:width 2")
   && send_command(MY_SCOPE, "data:start 1")
-  && send_command(MY_SCOPE, "data:stop 10")
-  && send_query(MY_SCOPE, "wfmpre:ch1?", TEXT, buf, RECEIVE_BUFFER_SIZE)) {
+  && send_command(MY_SCOPE, "data:stop 500")
+  && send_query(MY_SCOPE, "wfmpre:ch1?", TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) {
     // 7 chars per sample, 500 samples will be 3.5K
-    if(send_query(MY_SCOPE, "curve?", TEXT, buf, RECEIVE_BUFFER_SIZE)) {
+    if(send_query(MY_SCOPE, "curve?", TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Curve done");
     }
   }
@@ -523,7 +528,7 @@ void setup() {
   if(send_command(MY_SCOPE, "hardcopy:format tiff") 
   && send_command(MY_SCOPE, "hardcopy:port gpib")
   && send_command(MY_SCOPE, "hardcopy:layout portrait")
-  && send_query(MY_SCOPE, "hardcopy start", BINARY, buf, RECEIVE_BUFFER_SIZE)) {
+  && send_query(MY_SCOPE, "hardcopy start", BINARY, main_buffer, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Hardcopy done");
   }*/
 }
@@ -539,7 +544,7 @@ void loop() {
         read_sesr = 0;
         send_command(addr, (char*)"*ESR?");
         device_listen(addr, 0);
-        byte sesr = atoi((char*)buf);
+        byte sesr = atoi((char*)main_buffer);
         if(sesr) {
           Serial.print("\nEvent Status Register: ");
           if(sesr & 0b10000000) Serial.print(" PowerOn");
@@ -566,14 +571,14 @@ void loop() {
         } else if(!escape_next && (c == '\n' || c == '\r')) {
           break;
         } else if(escape_next || (c != '\n' && c != '\r' && c != '+' && c != ESC)) {
-          buf[n++] = c;
+          main_buffer[n++] = c;
           escape_next = 0;
         } else if(n == 0 && c == '+') { // unescaped + at beginning of input starts a controller command
-          buf[n++] = c;
+          main_buffer[n++] = c;
           controller_command = 1;
         } else if(controller_command) {
           if(n == 1 && c == '+') { // the 2nd + that is part of a controller command
-            buf[n++] = c;
+            main_buffer[n++] = c;
           } else {
             controller_command = 0; // this is really a kind of syntax error
             n = 0; // throw away the partial command
@@ -583,22 +588,22 @@ void loop() {
     }
     
     if(controller_command) {
-      char *command = (char*)buf + 2;
+      char *command = (char*)main_buffer + 2;
       byte num_params = 0;
       byte param_values[30];
       char *first_param = NULL;
       byte i;
       // Find end of command word
-      for(i = 2; i < n && !isspace(buf[i]); ++i)
+      for(i = 2; i < n && !isspace(main_buffer[i]); ++i)
         ;
-      buf[i++] = buf[n] = 0; // terminate command word, and entire command
+      main_buffer[i++] = main_buffer[n] = 0; // terminate command word, and entire command
       
       while(num_params < 3 && i < n) {
-        while(buf[i] && isspace(buf[i])) ++i;
-        if(num_params == 0) first_param = (char*)buf + i;
-        param_values[num_params++] = atoi((char*)buf + i);
-        while(buf[i] && !isspace(buf[i])) ++i;
-        buf[i] = 0; // terminate parameter string
+        while(main_buffer[i] && isspace(main_buffer[i])) ++i;
+        if(num_params == 0) first_param = (char*)main_buffer + i;
+        param_values[num_params++] = atoi((char*)main_buffer + i);
+        while(main_buffer[i] && !isspace(main_buffer[i])) ++i;
+        main_buffer[i] = 0; // terminate parameter string
       }
 
       if(!strcmp(command, "addr")) {
@@ -735,11 +740,11 @@ void loop() {
         Serial.println(command);
       }
     } else {
-      if(!(eos & 0b10)) buf[n++] = '\r';
-      if(!(eos & 0b01)) buf[n++] = '\n';
-      buf[n] = 0;
+      if(!(eos & 0b10)) main_buffer[n++] = '\r';
+      if(!(eos & 0b01)) main_buffer[n++] = '\n';
+      main_buffer[n] = 0;
       
-      if(send_command(addr, (char*)buf) && read_after_write) { // FIXME - will stop at a NUL byte
+      if(send_command(addr, (char*)main_buffer) && read_after_write) { // FIXME - will stop at a NUL byte
         device_listen(addr, binary_mode);
       }
     }
