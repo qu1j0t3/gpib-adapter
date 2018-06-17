@@ -77,6 +77,7 @@
  */
 
 #include <ctype.h>
+#include <avr/wdt.h>
 
 #include "controller.h"
 
@@ -444,8 +445,19 @@ bool send_command(byte device, const char *command) {
          check(cmd(MSG_UNTALK));
 }
 
+void prologix_setting(byte *p, byte num_params, byte param_value) {
+  if(num_params) {
+    *p = param_value;
+  } else {
+    Serial.println(*p);
+  }
+}
+
 void setup() {
   DDRB = DDRC = DDRD = 0; // all inputs
+
+  //MCUSR = 0;
+  //wdt_disable();
 
   mode(TE_LISTEN, DATA_NO_EOI);
 
@@ -481,7 +493,7 @@ void setup() {
   Serial.print(TRANSMIT_TIMEOUT_10MS*10);
   Serial.println(" ms");
   Serial.println("Use  ++addr <gpib_address>  to address a specific device.");
-  Serial.println("Use  ++v 1  to enable interactive mode.\n");
+  Serial.println("Use  ++v 1  to enable interactive mode.");
   Serial.println("Also see  ++help");
 /*
   if(send_query(MY_SCOPE, "*IDN?",    TEXT, buf, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
@@ -514,14 +526,6 @@ void setup() {
   && send_query(MY_SCOPE, "hardcopy start", BINARY, buf, RECEIVE_BUFFER_SIZE)) {
       Serial.println("\n\n%%% Hardcopy done");
   }*/
-}
-
-void prologix_setting(byte *p, byte num_params, byte param_value) {
-  if(num_params) {
-    *p = param_value;
-  } else {
-    Serial.println(*p);
-  }
 }
 
 void loop() {
@@ -659,9 +663,12 @@ void loop() {
         } else {
           read_timeout_10ms = atol(first_param)/10;
         }
-      } else if(!strcmp(command, "rst")) {
-        /*TODO - probably use watchdog timer*/
-      } /*else if(!strcmp(command, "savecfg")) {
+      } /*else if(!strcmp(command, "rst")) {
+        // This doesn't work yet; device goes into a reset loop if used
+        //WDTCSR = (1 << WDCE) | (1 << WDE);
+        wdt_enable(WDTO_15MS);
+        while(1) ;
+      }*/ /*else if(!strcmp(command, "savecfg")) {
         not impl
       }*/ else if(!strcmp(command, "spoll")) {
         serialpoll(num_params ? param_values[0] : addr);
