@@ -366,8 +366,8 @@ byte base64_groups;
 void send_base64(byte *buf, size_t n) {
   static char base64[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   for(size_t i = 0; i < n; i += 3) {
-    b1 = (i+1) < n ? buf[i+1] : 0;
-    b2 = (i+2) < n ? buf[i+2] : 0;
+    byte b1 = (i+1) < n ? buf[i+1] : 0;
+    byte b2 = (i+2) < n ? buf[i+2] : 0;
     Serial.write(base64[buf[i] >> 2]);                                          // Always defined
     Serial.write(base64[((buf[i] << 4) | (b1 >> 4)) & 0b111111]);               // Always defined
     Serial.write((i+1) < n ? base64[((b1 << 2) | (b2 >> 6)) & 0b111111] : '='); // Only defined if we have data for p[1] and p[2]
