@@ -45,10 +45,11 @@ c1 = [sum([i*v for i,v in enumerate(col)]) / sum([v for i,v in enumerate(col)])
 mn = (np.min(c1) + np.max(c1))/2
 curve = [x-mn for x in c1]
 
-
-# find zero crossings (positive-going)
-# (if the signal is noisy, it should be filtered before doing this)
-c1,c2 = [i for i in range(len(curve)-1) if curve[i] < 0 and curve[i+1] > 0]
+# find zero crossings (if the signal is noisy, it should be filtered before doing this)
+crossings = [i for i in range(len(curve)-1) if curve[i] < 0 and curve[i+1] > 0]
+if len(crossings) < 2:
+  crossings = [i for i in range(len(curve)-1) if curve[i] > 0 and curve[i+1] < 0]
+c1,c2 = crossings
 t0 = c1 - curve[c1] / (curve[c1+1] - curve[c1])
 t1 = c2 - curve[c2] / (curve[c2+1] - curve[c2])
 print("t0 = {}, t1 = {}   Samples per cycle: {}".format(t0, t1, t1-t0))
@@ -65,14 +66,16 @@ exp = ceil(log2(len(curve)))
 pts = int(pow(2, exp))
 print("Next power of 2 = {}  ({} points)".format(exp, pts))
 # Subtract mean value, in order to zero DC component
-mn = np.mean(curve)
+mn = np.mean(cycle)
 resampled = [interp_sample(t0 + (t/float(pts))*(t1-t0)) - mn for t in range(pts)]
+
+plt.plot(cycle)
+plt.show()
 
 #resampled = [copysign(1, x) for x in resampled] # fake a square wave for testing ~ 48% THD
 fft = np.fft.rfft(resampled).imag  # sine basis functions are in imaginary axis (cosines are real)
 thd = -sqrt(sum([x*x for x in fft[2:]])) / fft[1]
 print("THD = {}%".format(thd*100))
-print(fft)
 
 plt.bar(range(30), fft[0:30], tick_label=range(30))
 plt.show()
@@ -83,20 +86,18 @@ plt.show()
 # Reconstruct signal from first five harmonics
 mod_fft = np.zeros_like(fft, np.complex)
 mod_fft[1] = complex(0,fft[1])
-f = mod_fft.copy()
-mod_fft[2] = complex(0,fft[2])
-mod_fft[3] = complex(0,fft[3])
-mod_fft[4] = complex(0,fft[4])
-mod_fft[5] = complex(0,fft[5])
-#plt.plot(resampled)
-reconstruct = np.fft.irfft(mod_fft).real
-fundamental = np.fft.irfft(f).real
+fundamental = np.fft.irfft(mod_fft).real
+#mod_fft[2] = complex(0,fft[2])
+#mod_fft[3] = complex(0,fft[3])
+#mod_fft[4] = complex(0,fft[4])
+#mod_fft[5] = complex(0,fft[5])
+#reconstruct = np.fft.irfft(mod_fft).real
 
 # Show reconstructed signal, the fundamental,
 # along with the original signal and an error term
 # between reconstructed and original.
-plt.plot(reconstruct)
-plt.plot(fundamental)
+#plt.plot(reconstruct)
+#plt.plot(fundamental)
 plt.plot(resampled)
-plt.plot(reconstruct - resampled)
+plt.plot(fundamental - resampled)
 plt.show()
