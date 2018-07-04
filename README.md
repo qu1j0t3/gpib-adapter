@@ -52,6 +52,31 @@ Adapter fully works. For example I have been able to capture curve data and hard
 
 ![Curve example](https://i.imgur.com/MQ9LX2t.png)
 
+### Using `screen` to interact
+
+You can connect to the adapter and send GPIB commands interactively.
+Find the device name for the USB/serial port on the Arduino - e.g. check Tools->Port
+in the Arduino IDE.
+
+E.g. on my system, `screen /dev/cu.wchusbserial3d20 115200 -L` gives you a terminal
+opened on that port.
+* To exit `screen` but stay connected to the port, type control-`A` `d`
+  * You will not be able to upload new code to the Arduino while connected
+* To exit and close port, control-`A` control-`\` (and type `y` at the prompt)
+* You will probably want to type `++v 1` at the start of your session
+  to enable interactive features like input echo and read-after-write (`auto 1`).
+
+      2018-07-04 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>
+      Use  ++v 1  for interactive session. See  ++help
+    
+      > ++addr 2
+    
+      > *idn?
+      TEKTRONIX,TDS 460A,0,CF:91.1CT FV:v1.0.2e
+    
+      >
+      
+      
 #### Test plan
 
 There are test routines which can be enabled in the source.

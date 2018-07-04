@@ -81,7 +81,7 @@
 
 #include "controller.h"
 
-const char *CTLR_VERSION = "2018-06-16 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
+const char *CTLR_VERSION = "2018-07-04 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
 
 #define PB_OUTPUTS    0b110100 // PORTB Pins that are always outputs
 #define PB_BIDI_FWD   0b001011 // PORTB Bidirectional pins that follow TALK ENABLE (transmit when TE is high)
@@ -97,7 +97,7 @@ const char *CTLR_VERSION = "2018-06-16 GPIB/Arduino Controller by Toby Thain <to
 
 byte addr = NO_DEVICE;
 byte sec_addr = 0;
-byte read_after_write = 1;
+byte read_after_write = 0;
 byte read_until_eoi = 1;
 byte read_until_char;
 byte command_eoi = 1;
@@ -436,11 +436,6 @@ bool send_command(byte device, const char *command) {
     return 0;
   }
   
-  if(verbose) {
-    Serial.print("> ");
-    Serial.println(command);
-  }
-  
   return check(cmd(MSG_UNLISTEN)) &&
          check(cmd(MSG_LISTEN | device)) &&
          check(tx_data((byte*)command, command_eoi, strlen(command))) &&
@@ -499,7 +494,7 @@ void setup() {
   Serial.println("Use  ++addr <gpib_address>  to address a specific device.");
   Serial.println("Use  ++v 1  to enable interactive mode.");
   */
-  Serial.println("See  ++help");
+  Serial.println("Use  ++v 1  for interactive session. See  ++help");
 /*
   if(send_query(MY_SCOPE, "*IDN?",    TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
   if(send_query(MY_SCOPE, "acquire?", TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
@@ -563,22 +558,36 @@ void loop() {
     }
 
     bool escape_next = 0;
+    controller_command = 0;
+    if(verbose) {
+      Serial.write('\r');
+      Serial.write('\n');
+      Serial.write('>');
+      Serial.write(' ');
+    }
     for(n = 0; n < RECEIVE_BUFFER_SIZE;) {
       int c = Serial.read();
       if(c != -1) {
         if(!escape_next && c == ESC) {
           escape_next = 1;
         } else if(!escape_next && (c == '\n' || c == '\r')) {
+          if(verbose) {
+            Serial.write('\r');
+            Serial.write('\n');
+          }
           break;
         } else if(escape_next || (c != '\n' && c != '\r' && c != '+' && c != ESC)) {
           main_buffer[n++] = c;
+          if(verbose) Serial.write(c);
           escape_next = 0;
         } else if(n == 0 && c == '+') { // unescaped + at beginning of input starts a controller command
           main_buffer[n++] = c;
+          if(verbose) Serial.write(c);
           controller_command = 1;
         } else if(controller_command) {
           if(n == 1 && c == '+') { // the 2nd + that is part of a controller command
             main_buffer[n++] = c;
+            if(verbose) Serial.write(c);
           } else {
             controller_command = 0; // this is really a kind of syntax error
             n = 0; // throw away the partial command
@@ -735,11 +744,12 @@ void loop() {
         prologix_setting(&cr_to_lf, num_params, param_values[0]);
       } else if(!strcmp(command, "verbose") || !strcmp(command, "v")) {
         prologix_setting(&verbose, num_params, param_values[0]);
+        read_after_write = 1;
       } else if(verbose) {
         Serial.print("Unknown command: ");
         Serial.println(command);
       }
-    } else {
+    } else if(n) {
       if(!(eos & 0b10)) main_buffer[n++] = '\r';
       if(!(eos & 0b01)) main_buffer[n++] = '\n';
       main_buffer[n] = 0;
