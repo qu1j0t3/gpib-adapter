@@ -116,6 +116,14 @@ Use them in combination with the steps below.
   * Verify NRFD (A2) as output - _PASS_
   * Verify NDAC (A3) as output - _PASS_
 
+### Other projects
+
+* [Emanuele Girlando - ARDUINO UNO as a USB to GPIB controller](http://egirland.blogspot.com/2014/03/arduino-uno-as-usb-to-gpib-controller.html)
+  * My project is completely independent Emanuele's design,
+    but we did both choose Prologix compatibility.
+    Note Emanuele's project is direct connect to Arduino GPIO,
+    without buffering. This may affect usage with multiple device buses. 
+
 
     This file is part of "GPIB Adapter", an Arduino based controller for GPIB (IEEE 488).
     Copyright (C) 2018 Toby Thain, toby@telegraphics.com.au
