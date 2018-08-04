@@ -482,7 +482,7 @@ void setup() {
   //output_test(1);
   //input_test(1);
 
-  Serial.println("\n\n");
+  Serial.print("\r\n\r\n");
   Serial.println(CTLR_VERSION);
   /*
   Serial.print("\nReceive timeout ");

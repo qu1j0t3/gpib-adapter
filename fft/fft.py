@@ -47,10 +47,14 @@ print("Next power of 2 = {}  ({} points)".format(exp, pts))
 mn = np.mean(curve)
 resampled = [interp_sample(t0 + (t/float(pts))*(t1-t0)) - mn for t in range(pts)]
 
+
 #resampled = [copysign(1, x) for x in resampled] # fake a square wave for testing ~ 48% THD
 fft = np.fft.rfft(resampled).imag  # sine basis functions are in imaginary axis (cosines are real)
 thd = -sqrt(sum([x*x for x in fft[2:]])) / fft[1]
 print("THD = {}%".format(thd*100))
+
+plt.plot(resampled)
+plt.show()
 
 plt.bar(range(len(fft)), fft, tick_label=range(len(fft)))
 plt.show()
