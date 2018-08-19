@@ -415,7 +415,9 @@ bool device_listen(byte addr, bool binary_mode) {
         return 0;
       }
     } while(res == BUFFER_FULL);
-    if(verbose && binary_mode) Serial.println("\n%%% Base64 end");
+
+    // The end marker is very helpful to hosts receiving binary (base64) data, so always print it.
+    if(/*verbose &&*/ binary_mode) Serial.println("\n%%% Base64 end");
 
     if(verbose && rx_total > sz) { // Only show stats on "long" responses
       Serial.print("  Received bytes: ");
