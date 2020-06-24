@@ -48,7 +48,7 @@
 
  * DC     Direction Control -- tied Low -- means that this device is a controller
  * SC     System Controller -- tied High -- means that REN and IFC are transmitted by this controller
- * 
+ *
  * Directions
  *   | PB5 . PB4 . PB3 . PB2 . PB1 . PB0 | PD7 . PD6 . PD5 . PD4 . PD3 . PD2 | PC5 . PC4 . PC3 . PC2 . PC1 . PC0 |   Port/Pin
  *   | TE  | ATN | EOI | PE  | D8  . D7  . D6  . D5  . D4  . D3  . D2  . D1  | REN | IFC | NDAC| NRFD| DAV | SRQ |   Bus
@@ -56,14 +56,14 @@
  *   | OUT | OUT | *** | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | OUT | IN  | IN  | OUT | IN  |   Dir: Talk (TE High/DC Low)
  *                           \ PE=H: Totem-Pole Output; PE=L: Open Collector Output
  *   | OUT | OUT | *** | OUT | IN  | IN  | IN  | IN  | IN  | IN  | IN  | IN  | OUT | OUT | OUT | OUT | IN  | IN  |   Dir: Listen (TE Low/DC Low)
- *   
+ *
  *   TE  DC  ATN EOI***
  *   --- --- --- -------
  *   H   X   H   T (OUT)
  *   L   X   H   R (IN)
  *   X   H   L   R (IN)   Does not occur, because DC is tied Low
  *   X   L   L   T (OUT)
- *  
+ *
  * Useful commands:
  *  *ESR?   read Standard Event Status Register
  *  *STB? or serial poll     read Status Byte Register
@@ -71,13 +71,16 @@
  *  *IDN?
  *  HORIZONTAL?    return horizontal settings
  *  CH1?      return vertical settings for Ch 1
- *  
+ *
  *  Measured data transceiver output: 0.19V low, 3.30V high   (3.16V after both transceivers installed)
  *  control transceiver measures 3.16V high for totem-pole outputs, 2.80V high for the open collector (SRQ, NRFD, NDAC)
  */
 
 #include <ctype.h>
 #include <avr/wdt.h>
+#include <stdint.h>
+
+typedef uint8_t byte;
 
 #include "controller.h"
 
@@ -119,11 +122,11 @@ void mode(bool talk, byte atn_eoi_pe){
   //         so that none are outputs when transceiver lines are switched to outputs by
   //         the change in Talk Enable line.
   //           As high-Z pins, these will be pulled up or down according to
-  //         the wired resistors on the terminal side (GPIO pin). 
+  //         the wired resistors on the terminal side (GPIO pin).
   //         All are pulled up to Vcc except NRFD and NDAC which are pulled down to GND.
 
   // Set all bidirectional pins to INPUT
-          
+
   DDRB = PB_OUTPUTS;
   DDRC = PC_OUTPUTS;
   DDRD = 0; // all port D pins are bidirectional
@@ -135,7 +138,7 @@ void mode(bool talk, byte atn_eoi_pe){
     PORTC |= PC_BIDI_FWD;
     PORTD  = PD_BIDI_FWD;
     PORTB  = PB_TE_MASK | atn_eoi_pe; //--------- Set transceiver to TALK ---------
-    
+
     // Now set actual direction to match transceiver/TE
     DDRC = PC_OUTPUTS | PC_BIDI_FWD;
     DDRD = PD_BIDI_FWD;
@@ -145,7 +148,7 @@ void mode(bool talk, byte atn_eoi_pe){
     PORTC &= ~PC_NRFD_MASK; // set NRFD LOW (true on GPIB)
     PORTC &= ~PC_NDAC_MASK; // set NDAC LOW (true on GPIB)
     PORTB  = atn_eoi_pe; //--------- Set transceiver to LISTEN ---------
-    
+
     // Now set actual direction to match transceiver/TE
     DDRC |= PC_NRFD_MASK;
     DDRC |= PC_NDAC_MASK;
@@ -166,7 +169,7 @@ byte transmit(byte mask, byte value){
   }
 
   PORTC |= PC_DAV_MASK; // data not valid
-  
+
   if((PINC & (PC_NRFD_MASK | PC_NDAC_MASK)) == (PC_NRFD_MASK | PC_NDAC_MASK)) {
     return NO_LISTENERS;
   } else {
@@ -180,16 +183,16 @@ byte transmit(byte mask, byte value){
     b[1] = value >= ' ' && value < 0x7f ? value : ' ';
     b[3] = 0;
     Serial.print(b);
-    
-    if(!(mask & PB_ATN_FALSE_MASK)) Serial.print("  ATN");
-    if(!(mask & PB_EOI_FALSE_MASK)) Serial.print("  EOI");
+
+    if(!(mask & PB_ATN_MASK)) Serial.print("  ATN");
+    if(!(mask & PB_EOI_MASK)) Serial.print("  EOI");
     Serial.println(mask & PB_PE_TOTEMPOLE ? "  PE(TP)" : "  ~PE(OC)");
 #endif
     value = ~ value;
     PORTB = PB_TE_MASK | mask | (value >> 6);
     PORTD = value << 2;
     delayMicroseconds(2);
-    
+
     // Wait until all acceptors are ready for data
     countdown(TRANSMIT_TIMEOUT_10MS);
     while(!(PINC & PC_NRFD_MASK) && millisCountdown)
@@ -198,9 +201,9 @@ byte transmit(byte mask, byte value){
     if(millisCountdown == 0) { // NRFD was not raised within timeout
       return TX_TIMEOUT;
     }
-      
+
     PORTC &= ~PC_DAV_MASK; // data valid
-    
+
     // Wait until all acceptors have accepted the data
     countdown(TRANSMIT_TIMEOUT_10MS);
     while(!(PINC & PC_NDAC_MASK) && millisCountdown)
@@ -209,7 +212,7 @@ byte transmit(byte mask, byte value){
     if(millisCountdown == 0) { // NDAC was not raised within timeout
       return TX_TIMEOUT;
     }
-    
+
     PORTC |= PC_DAV_MASK; // data not valid
     return SUCCESS;
   }
@@ -233,12 +236,12 @@ byte receive(byte *value){
   }
 
   PORTC &= ~PC_NRFD_MASK; // not ready for data
-  
+
   *value = ~((PINB << 6) | (PIND >> 2));
   byte res = PINB & PB_EOI_MASK ? SUCCESS : EOI; // remembering level -> logic inversion
 
   PORTC |= PC_NDAC_MASK; // accepted data
-  
+
   return res;
 }
 
@@ -257,7 +260,7 @@ byte rx_data(byte *buf, size_t max, size_t *count) {
   // This might be called in a block loop, so don't bother
   // changing direction unless necessary.
   if(PORTB & PB_TE_MASK) mode(TE_LISTEN, DATA_NO_EOI);
-  
+
   size_t n = 0;
   for(byte *p = buf; n < max; ++n, ++p) {
     byte res = receive(p);
@@ -278,7 +281,7 @@ byte rx_data(byte *buf, size_t max, size_t *count) {
 
 #define RECEIVE_BUFFER_SIZE 0x100
 static byte main_buffer[RECEIVE_BUFFER_SIZE+3];
-  
+
 byte cmd(byte msg) {
   mode(TE_TALK, CMD_NO_EOI);
 #ifdef DEBUG
@@ -292,7 +295,7 @@ bool message_available = 0;
 
 void serialpoll(byte addr) {
   byte stat;
-  
+
   if(cmd(MSG_UNLISTEN) == SUCCESS &&
      cmd(MSG_SER_POLL_ENB) == SUCCESS &&
      cmd(MSG_TALK | addr) == SUCCESS &&
@@ -327,16 +330,16 @@ bool check(byte res) {
     case SUCCESS:
       return 1;
     case DIR_BUG:
-      Serial.println("Dir not configured correctly for tx/rx - bug?\n"); 
+      Serial.println("Dir not configured correctly for tx/rx - bug?\n");
       return 0;
     case NO_LISTENERS:
-      if(verbose) Serial.println("No listeners - Adapter plugged in and devices on?\n"); 
+      if(verbose) Serial.println("No listeners - Adapter plugged in and devices on?\n");
       return 0;
     case TX_TIMEOUT:
-      if(verbose) Serial.println("Transmit timeout\n"); 
+      if(verbose) Serial.println("Transmit timeout\n");
       return 0;
     case RX_TIMEOUT:
-      if(verbose) Serial.println("Receive timeout\n");  
+      if(verbose) Serial.println("Receive timeout\n");
       return 0;
   }
   return 0;
@@ -380,14 +383,14 @@ void send_base64(byte *buf, size_t n) {
   }
 }
 
-bool device_listen(byte addr, bool binary_mode) {  
+bool device_listen(byte addr, bool binary_mode) {
   if(check(cmd(MSG_TALK | addr))) {
     size_t n = 0, rx_total = 0;
     size_t sz = RECEIVE_BUFFER_SIZE;
     byte res;
 
     millisCountUp = 0;
-    
+
     if(binary_mode) {
       sz -= (sz % 3) + 3; // make buffer a multiple of 3 for correct Base64 encoding
       base64_groups = 0;
@@ -437,7 +440,7 @@ bool send_command(byte device, const char *command) {
     if(verbose) Serial.println("No device address set. Use ++addr <address>");
     return 0;
   }
-  
+
   return check(cmd(MSG_UNLISTEN)) &&
          check(cmd(MSG_LISTEN | device)) &&
          check(tx_data((byte*)command, command_eoi, strlen(command))) &&
@@ -466,7 +469,7 @@ void setup() {
   // Uncomment these two lines to execute interface clear at controller initialisation
   //PORTC &= ~PC_IFC_MASK; // set IFC true on GPIB
   //delay(10);
-  
+
   PORTC |= PC_IFC_MASK; // set IFC false on GPIB
 
 
@@ -481,27 +484,15 @@ void setup() {
   interrupts();
 
 
-  //output_test(1);
-  //input_test(1);
-
   Serial.print("\r\n\r\n");
   Serial.println(CTLR_VERSION);
-  /*
-  Serial.print("\nReceive timeout ");
-  Serial.print(read_timeout_10ms*10);
-  Serial.println(" ms (set up to 65530 with  ++read_tmo_ms <ms> )");
-  Serial.print("Transmit timeout ");
-  Serial.print(TRANSMIT_TIMEOUT_10MS*10);
-  Serial.println(" ms");
-  Serial.println("Use  ++addr <gpib_address>  to address a specific device.");
-  Serial.println("Use  ++v 1  to enable interactive mode.");
-  */
+
   Serial.println("Use  ++v 1  for interactive session. See  ++help");
 /*
   if(send_query(MY_SCOPE, "*IDN?",    TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
   if(send_query(MY_SCOPE, "acquire?", TEXT, main_buffer, RECEIVE_BUFFER_SIZE)) Serial.println("OK");
 
-  if(send_command(MY_SCOPE, "data:source ch1") 
+  if(send_command(MY_SCOPE, "data:source ch1")
   && send_command(MY_SCOPE, "data:encdg ascii")
   && send_command(MY_SCOPE, "data:width 2")
   && send_command(MY_SCOPE, "data:start 1")
@@ -514,7 +505,7 @@ void setup() {
   }
 
   // Example text format hardcopy
-  if(send_command(MY_SCOPE, "hardcopy:format epsmono") 
+  if(send_command(MY_SCOPE, "hardcopy:format epsmono")
   && send_command(MY_SCOPE, "hardcopy:port gpib")
   && send_command(MY_SCOPE, "hardcopy:layout portrait")
   && send_query(MY_SCOPE, "hardcopy start", TEXT, buf, RECEIVE_BUFFER_SIZE)) {
@@ -522,7 +513,7 @@ void setup() {
   }
 
   // Example binary format hardcopy. Convert base64 output with a suitable utility.
-  if(send_command(MY_SCOPE, "hardcopy:format tiff") 
+  if(send_command(MY_SCOPE, "hardcopy:format tiff")
   && send_command(MY_SCOPE, "hardcopy:port gpib")
   && send_command(MY_SCOPE, "hardcopy:layout portrait")
   && send_query(MY_SCOPE, "hardcopy start", BINARY, main_buffer, RECEIVE_BUFFER_SIZE)) {
@@ -570,7 +561,7 @@ void loop() {
     for(n = 0; n < RECEIVE_BUFFER_SIZE;) {
       int c = Serial.read();
       if(c != -1) {
-        if(!escape_next && c == ESC) {
+        if(c == ESC) {
           escape_next = 1;
         } else if(!escape_next && (c == '\n' || c == '\r')) {
           if(verbose) {
@@ -604,16 +595,22 @@ void loop() {
       byte param_values[30];
       char *first_param = NULL;
       byte i;
+
       // Find end of command word
       for(i = 2; i < n && !isspace(main_buffer[i]); ++i)
         ;
       main_buffer[i++] = main_buffer[n] = 0; // terminate command word, and entire command
-      
+
+      // collect up to three parameters separated by whitespace
+      // set `first_param` to point to the first parameter string (nul terminated)
       while(num_params < 3 && i < n) {
-        while(main_buffer[i] && isspace(main_buffer[i])) ++i;
-        if(num_params == 0) first_param = (char*)main_buffer + i;
+        while(main_buffer[i] && isspace(main_buffer[i]))
+            ++i;
+        if(num_params == 0)
+            first_param = (char*)main_buffer + i;
         param_values[num_params++] = atoi((char*)main_buffer + i);
-        while(main_buffer[i] && !isspace(main_buffer[i])) ++i;
+        while(main_buffer[i] && !isspace(main_buffer[i]))
+            ++i;
         main_buffer[i] = 0; // terminate parameter string
       }
 
@@ -630,7 +627,7 @@ void loop() {
         }
       } else if(!strcmp(command, "auto")) {
         prologix_setting(&read_after_write, num_params, param_values[0]);
-        
+
         if(num_params && addr != NO_DEVICE) {
           if(param_values[0]) { // address device to TALK
             cmd(MSG_TALK | addr);
@@ -698,12 +695,13 @@ void loop() {
           send_command(addr, group_exec_trigger);
         } else {
           if(check(cmd(MSG_UNLISTEN))) {
-            for(byte i = 0; i < num_params; ++i) {
-              if(param_values[i] <= 30 && !check(cmd(MSG_LISTEN | param_values[i]))) {
+            byte j;
+            for(j = 0; j < num_params; ++j) {
+              if(param_values[j] <= 30 && !check(cmd(MSG_LISTEN | param_values[j]))) {
                 break;
               }
             }
-            if(i == num_params) {
+            if(j == num_params) {
               check(cmd(MSG_GRP_EXEC_TRG));
             }
           }
@@ -711,7 +709,7 @@ void loop() {
       } else if(!strcmp(command, "ver")) {
         Serial.println(CTLR_VERSION);
       } else if(!strcmp(command, "help")) {
-        
+
         Serial.println("Supported Prologix commands:");
         Serial.println("  addr [<pad> [<sad>]]");
         Serial.println("  auto [0|1]");
@@ -739,7 +737,7 @@ void loop() {
         Serial.println("  b64 [0|1]        - base64 format for response");
         Serial.println("  cr2lf [0|1]      - map CR to LF in response");
         Serial.println("  v[erbose] [0|1]  - interactive mode");
-        
+
       } else if(!strcmp(command, "b64")) {
         prologix_setting(&binary_mode, num_params, param_values[0]);
       } else if(!strcmp(command, "cr2lf")) {
@@ -755,7 +753,7 @@ void loop() {
       if(!(eos & 0b10)) main_buffer[n++] = '\r';
       if(!(eos & 0b01)) main_buffer[n++] = '\n';
       main_buffer[n] = 0;
-      
+
       if(send_command(addr, (char*)main_buffer) && read_after_write) { // FIXME - will stop at a NUL byte
         device_listen(addr, binary_mode);
       }
