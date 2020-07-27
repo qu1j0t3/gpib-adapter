@@ -1,6 +1,6 @@
 /*
     This file is part of "GPIB Adapter", an Arduino based controller for GPIB (IEEE 488).
-    Copyright (C) 2018 Toby Thain, toby@telegraphics.com.au
+    Copyright (C) 2018-2020 Toby Thain, toby@telegraphics.com.au
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -84,7 +84,7 @@ typedef uint8_t byte;
 
 #include "controller.h"
 
-const char *CTLR_VERSION = "2018-07-04 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
+const char *CTLR_VERSION = "2020-07-27 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
 
 #define PB_OUTPUTS    0b110100 // PORTB Pins that are always outputs
 #define PB_BIDI_FWD   0b001011 // PORTB Bidirectional pins that follow TALK ENABLE (transmit when TE is high)
@@ -101,8 +101,9 @@ const char *CTLR_VERSION = "2018-07-04 GPIB/Arduino Controller by Toby Thain <to
 byte addr = NO_DEVICE;
 byte sec_addr = 0;
 byte read_after_write = 0;
-byte read_until_eoi = 1;
+byte read_until_eoi;
 byte read_until_char;
+byte read_until_char_set;
 byte command_eoi = 1;
 byte eos = 3;
 byte eot_enable = 0;
@@ -169,6 +170,9 @@ byte transmit(byte mask, byte value){
   }
 
   PORTC |= PC_DAV_MASK; // data not valid
+  
+  // Acceptors will initialise NRFD to low (True - none are ready for data),
+  // and set NDAC to low (True - none have accepted the data)
 
   if((PINC & (PC_NRFD_MASK | PC_NDAC_MASK)) == (PC_NRFD_MASK | PC_NDAC_MASK)) {
     return NO_LISTENERS;
@@ -191,29 +195,35 @@ byte transmit(byte mask, byte value){
     value = ~ value;
     PORTB = PB_TE_MASK | mask | (value >> 6);
     PORTD = value << 2;
+    // "All high rate Talkers should use a minimum multiline message settling time
+    // (T1 in the IEEE-488 Standard) of 350ns."
     delayMicroseconds(2);
 
-    // Wait until all acceptors are ready for data
+    // Wait until all acceptors are ready for data (NRFD high)
     countdown(TRANSMIT_TIMEOUT_10MS);
     while(!(PINC & PC_NRFD_MASK) && millisCountdown)
       ;
 
     if(millisCountdown == 0) { // NRFD was not raised within timeout
-      return TX_TIMEOUT;
+      return TX_NRFD_TIMEOUT;
     }
 
     PORTC &= ~PC_DAV_MASK; // data valid
 
-    // Wait until all acceptors have accepted the data
+    // Wait until all acceptors have accepted the data (NDAC high)
     countdown(TRANSMIT_TIMEOUT_10MS);
     while(!(PINC & PC_NDAC_MASK) && millisCountdown)
       ;
 
     if(millisCountdown == 0) { // NDAC was not raised within timeout
-      return TX_TIMEOUT;
+      return TX_NDAC_TIMEOUT;
     }
 
-    PORTC |= PC_DAV_MASK; // data not valid
+    PORTC |= PC_DAV_MASK; // data not valid (DAV high)
+    // Indicates to all acceptors that data on the DIO lines 
+    // must now be considered not valid.
+
+    // One byte has been transferred
     return SUCCESS;
   }
 }
@@ -266,7 +276,7 @@ byte rx_data(byte *buf, size_t max, size_t *count) {
     byte res = receive(p);
     if(res & IS_ERROR) {
       return res;
-    } else if((res == EOI && read_until_eoi) || (!read_until_eoi && *p == read_until_char)) {
+    } else if((read_until_eoi && res == EOI) || (read_until_char_set && *p == read_until_char)) {
       if(res == EOI && eot_enable) {
         p[1] = eot_char;
         ++n;
@@ -335,8 +345,11 @@ bool check(byte res) {
     case NO_LISTENERS:
       if(verbose) Serial.println("No listeners - Adapter plugged in and devices on?\n");
       return 0;
-    case TX_TIMEOUT:
-      if(verbose) Serial.println("Transmit timeout\n");
+    case TX_NDAC_TIMEOUT:
+      if(verbose) Serial.println("Transmit timeout (not accepted)\n");
+      return 0;
+    case TX_NRFD_TIMEOUT:
+      if(verbose) Serial.println("Transmit timeout (acceptors not ready)\n");
       return 0;
     case RX_TIMEOUT:
       if(verbose) Serial.println("Receive timeout\n");
@@ -437,7 +450,7 @@ bool device_listen(byte addr, bool binary_mode) {
 
 bool send_command(byte device, const char *command) {
   if(device == NO_DEVICE){
-    if(verbose) Serial.println("No device address set. Use ++addr <address>");
+    if(verbose) Serial.println("Device address not set. Use ++addr <address>");
     return 0;
   }
 
@@ -472,9 +485,6 @@ void setup() {
 
   PORTC |= PC_IFC_MASK; // set IFC false on GPIB
 
-
-  Serial.begin(115200);
-
   // set up 10ms interrupt
   TCCR1A = TCCR1C = 0;
   TCCR1B = (1 << CS11); // clkIO/8 prescaler
@@ -483,6 +493,7 @@ void setup() {
 
   interrupts();
 
+  Serial.begin(115200);
 
   Serial.print("\r\n\r\n");
   Serial.println(CTLR_VERSION);
@@ -553,10 +564,7 @@ void loop() {
     bool escape_next = 0;
     controller_command = 0;
     if(verbose) {
-      Serial.write('\r');
-      Serial.write('\n');
-      Serial.write('>');
-      Serial.write(' ');
+      Serial.print("\r\n> ");
     }
     for(n = 0; n < RECEIVE_BUFFER_SIZE;) {
       int c = Serial.read();
@@ -661,14 +669,18 @@ void loop() {
       } else if(!strcmp(command, "mode")) {
         Serial.println("Only controller mode is supported");
       } else if(!strcmp(command, "read")) {
-        if(num_params == 0) {
+        if(!strcmp(first_param, "eoi")) {
           read_until_eoi = 1;
+          read_until_char_set = 0;
         } else {
-          read_until_eoi = !strcmp(first_param, "eoi");
+          read_until_eoi = 0;
+          read_until_char_set = num_params > 0;
           read_until_char = param_values[0];
         }
         if(addr != NO_DEVICE) {
           device_listen(addr, binary_mode);
+        } else {
+          Serial.println("Device address not set. Use ++addr <address>");
         }
       } else if(!strcmp(command, "read_tmo_ms")) {
         if(num_params == 0) {
@@ -736,7 +748,7 @@ void loop() {
         Serial.println("Non-standard commands:");
         Serial.println("  b64 [0|1]        - base64 format for response");
         Serial.println("  cr2lf [0|1]      - map CR to LF in response");
-        Serial.println("  v[erbose] [0|1]  - interactive mode");
+        Serial.println("  v[erbose] [0|1]  - interactive mode; also sets auto=1");
 
       } else if(!strcmp(command, "b64")) {
         prologix_setting(&binary_mode, num_params, param_values[0]);
@@ -745,6 +757,12 @@ void loop() {
       } else if(!strcmp(command, "verbose") || !strcmp(command, "v")) {
         prologix_setting(&verbose, num_params, param_values[0]);
         read_after_write = 1;
+        
+        Serial.print("Receive timeout: ");
+        Serial.print(read_timeout_10ms);
+        Serial.print("0ms  Transmit timeout: ");
+        Serial.print(TRANSMIT_TIMEOUT_10MS);
+        Serial.println("0ms");
       } else if(verbose) {
         Serial.print("Unknown command: ");
         Serial.println(command);

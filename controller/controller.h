@@ -1,6 +1,6 @@
 /*
     This file is part of "GPIB Adapter", an Arduino based controller for GPIB (IEEE 488).
-    Copyright (C) 2018 Toby Thain, toby@telegraphics.com.au
+    Copyright (C) 2018-2020 Toby Thain, toby@telegraphics.com.au
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -49,10 +49,11 @@
 
 // Result codes (transmit/receive)
 #define IS_ERROR 1  // this bit indicates an error
-#define DIR_BUG      ((1*2)|IS_ERROR)
-#define NO_LISTENERS ((2*2)|IS_ERROR)
-#define TX_TIMEOUT   ((3*2)|IS_ERROR)
-#define RX_TIMEOUT   ((4*2)|IS_ERROR)
+#define DIR_BUG         ((1*2)|IS_ERROR)
+#define NO_LISTENERS    ((2*2)|IS_ERROR)
+#define TX_NDAC_TIMEOUT ((3*2)|IS_ERROR)
+#define TX_NRFD_TIMEOUT ((4*2)|IS_ERROR)
+#define RX_TIMEOUT      ((5*2)|IS_ERROR)
 #define SUCCESS      0
 #define EOI          (1*2) // if a received byte is EOI
 #define BUFFER_FULL  (2*2)
@@ -93,4 +94,3 @@
 #define NO_DEVICE           0b11111
 
 void mode(bool talk, byte atn_eoi_pe);
-
