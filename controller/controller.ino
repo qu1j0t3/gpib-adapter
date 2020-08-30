@@ -80,11 +80,13 @@
 #include <avr/wdt.h>
 #include <stdint.h>
 
+//#define DEBUG
+
 typedef uint8_t byte;
 
 #include "controller.h"
 
-const char *CTLR_VERSION = "2020-07-27 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
+const char *CTLR_VERSION = "2020-08-29 GPIB/Arduino Controller by Toby Thain <toby@telegraphics.com.au>";
 
 #define PB_OUTPUTS    0b110100 // PORTB Pins that are always outputs
 #define PB_BIDI_FWD   0b001011 // PORTB Bidirectional pins that follow TALK ENABLE (transmit when TE is high)
@@ -115,7 +117,6 @@ byte status_byte = 0;
 
 // nonstandard
 byte verbose = 0;
-byte prompt = 0;
 byte binary_mode = 0;
 byte cr_to_lf = 0;
 
@@ -252,11 +253,26 @@ byte receive(byte *value){
 
   PORTC &= ~PC_NRFD_MASK; // not ready for data
 
-  *value = ~((PINB << 6) | (PIND >> 2));
-  byte res = PINB & PB_EOI_MASK ? SUCCESS : EOI; // remembering level -> logic inversion
+  byte v = *value = ~((PINB << 6) | (PIND >> 2));
+  byte eoi = PINB & PB_EOI_MASK;
+  byte res = eoi ? SUCCESS : EOI; // remembering level -> logic inversion
 
   PORTC |= PC_NDAC_MASK; // accepted data
 
+#ifdef DEBUG
+    char b[9];
+    eight_bits(v, b);
+
+    Serial.print("received: ");
+    Serial.print(b);
+    b[0] = b[2] = ' ';
+    b[1] = v >= ' ' && v < 0x7f ? v : ' ';
+    b[3] = 0;
+    Serial.print(b);
+    if(!eoi) Serial.print("  EOI");
+    Serial.print('\r');
+    Serial.print('\n');
+#endif
   return res;
 }
 
@@ -399,6 +415,7 @@ void send_base64(byte *buf, size_t n) {
     Serial.write((i+2) < n ? base64[b2 & 0b111111] : '=');                      // Only defined if we have data for p[2]
     ++base64_groups;
     if(base64_groups == 18) {
+      Serial.write('\r');
       Serial.write('\n');
       base64_groups = 0;
     }
@@ -442,7 +459,7 @@ bool device_listen(byte addr, bool binary_mode) {
     } while(res == BUFFER_FULL);
 
     // The end marker is very helpful to hosts receiving binary (base64) data, so always print it.
-    if(/*verbose &&*/ binary_mode) Serial.println("\n%%% Base64 end");
+    if(/*verbose &&*/ binary_mode) Serial.println("\n%%% Base64 end\n");
 
     if(verbose && rx_total > sz) { // Only show stats on "long" responses
       Serial.print("  Received bytes: ");
@@ -547,7 +564,7 @@ void loop() {
     bool escape_next;
     bool controller_command;
     
-    if(addr != NO_DEVICE && (verbose | prompt)) {
+    if(addr != NO_DEVICE && verbose) {
       check_srq();
       if(read_sesr) {
         read_sesr = 0;
@@ -564,6 +581,7 @@ void loop() {
           if(sesr & 0b00000100) Serial.print(" QueryError");
           if(sesr & 0b00000010) Serial.print(" RequestControl");
           if(sesr & 0b00000001) Serial.print(" OperationComplete");
+          Serial.write('\r');
           Serial.write('\n');
           send_command(addr, "EVMSG?");
           device_listen(addr, 0);
@@ -643,6 +661,15 @@ void loop() {
         }
       } else if(!strcmp(command, "auto")) {
         prologix_setting(&read_after_write);
+        
+        if(read_after_write == 2) {
+          read_until_eoi = 1;
+          read_until_char_set = 0;
+        } else if(read_after_write > 2) {
+          read_until_eoi = 0;
+          read_until_char = read_after_write;
+          read_until_char_set = 1;
+        }
 
         if(num_params && addr != NO_DEVICE) {
           if(param_values[0]) { // address device to TALK
@@ -732,7 +759,7 @@ void loop() {
 
         Serial.println("Supported Prologix commands:");
         Serial.println("  addr [<pad> [<sad>]]");
-        Serial.println("  auto [0|1]");
+        Serial.println("  auto [0|1|2(eoi)|char]");
         Serial.println("  clr");
         Serial.println("  eoi [0|1]");
         Serial.println("  eos [0|1|2|3]");
@@ -764,18 +791,7 @@ void loop() {
         prologix_setting(&cr_to_lf);
       } else if(!strcmp(command, "verbose") || !strcmp(command, "v")) {
         prologix_setting(&verbose);
-        if (verbose == 2) {
-          // Send status string after each message sent or command.
-          // After empty command (newline): []
-          // After non-empty message: [status_code,sesr] where status_code is 0/1 for fail/success
-          //                and sesr is value of device Event Status Register
-          // do not echo or do anything else verbose.
-          // Note nothing at all is sent after a valid command.
-          verbose = 0;
-          prompt = 1;
-        } else {
-          prompt = 0;
-        }
+        
         if (verbose) {
           read_after_write = 1;
           
@@ -795,16 +811,9 @@ void loop() {
       main_buffer[n] = 0;
 
       byte success = send_command(addr, (char*)main_buffer);
-      if(prompt) {
-        Serial.write('[');
-        Serial.write('0'+success);
-        Serial.write(']');
-      }
       if(success && read_after_write) { // FIXME - will stop at a NUL byte
         device_listen(addr, binary_mode);
       }
-    } else if(prompt) {
-      Serial.print("[]");
     }
   }
 }

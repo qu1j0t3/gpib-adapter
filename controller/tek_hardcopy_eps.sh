@@ -32,13 +32,13 @@ ADDR=${2:-2}
     while read -t 7 DATA ; do : ; done
 
     echo "++addr $ADDR" > $PORT
-    echo "++auto 0"     > $PORT
+    #echo "++auto 0"     > $PORT
     echo "hardcopy:format epscolor" > $PORT
     #echo "hardcopy:layout portrait" > $PORT
     echo "hardcopy:port gpib" > $PORT
     echo "hardcopy start" > $PORT
-    echo "read_tmo_ms 7000"       > $PORT
-    echo "++read"       > $PORT
+    echo "++read_tmo_ms 7000"       > $PORT
+    echo "++read eoi"       > $PORT
 
 	# Read EPS data one line at a time. Lines from the Tek are terminated by CR (not Unix LF).
 	# Timeout after 10 seconds waiting for data: local $SIG{ALRM} = sub{exit(0)}; alarm(10); ...
